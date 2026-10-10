@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Badminton Liga-Scanner</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #f4f7fb;
+      color: #172033;
+    }
+    main {
+      background: white;
+      padding: 22px;
+      border-radius: 14px;
+      box-shadow: 0 2px 12px #0001;
+    }
+    input, button {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 12px;
+      margin: 8px 0;
+      font-size: 16px;
+      border-radius: 8px;
+    }
+    input { border: 1px solid #bbb; }
+    button {
+      background: #176b46;
+      color: white;
+      border: 0;
+      font-weight: bold;
+    }
+    #status { white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Badminton Liga-Scanner</h1>
+    <p>Turnierdaten prüfen und Spielergebnisse für die Liga-Analyse vorbereiten.</p>
+    <label for="turnierlink">Turnier.de-Link</label>
+    <input id="turnierlink" type="url"
+      placeholder="https://dbv.turnier.de/..." />
+    <button id="pruefen">Turnier-Link prüfen</button>
+    <p id="status">Gib einen Turnier.de-Link ein, um zu beginnen.</p>
+  </main>
+  <script>
+    document.getElementById("pruefen").addEventListener("click", async () => {
+      const link = document.getElementById("turnierlink").value.trim();
+      const status = document.getElementById("status");
+      if (!link) {
+        status.textContent = "Bitte zuerst einen Turnier.de-Link eingeben.";
+        return;
+      }
+      if (!/^https:\/\/([a-z0-9-]+\.)?turnier\.de\//i.test(link)) {
+        status.textContent = "Bitte einen gültigen HTTPS-Link von turnier.de eingeben.";
+        return;
+      }
+      status.textContent =
+        "Link erkannt. Die automatische Ermittlung von Spielern und DBV-Ligahistorien ist noch nicht eingerichtet.";
+    });
+  </script>
+</body>
+</html>

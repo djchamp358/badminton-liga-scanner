@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 APP = FastAPI(title="Badminton Liga-Scanner", version="1.0.0")
-APP.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "static")), name="static")
+APP.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "Static")), name="static")
 
 ALLOWED_HOSTS = {"dbv.turnier.de", "turnier.de"}
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"

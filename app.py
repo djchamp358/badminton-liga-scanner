@@ -211,7 +211,7 @@ async def analyze_player(client: httpx.AsyncClient, p: dict[str, str], seasons: 
 
 @APP.get("/")
 async def index():
-    return FileResponse("static/index.html")
+    return FileResponse(str(Path(__file__).resolve().parent / "Static" / "index.html"))
 
 @APP.get("/health")
 async def health():

@@ -47,21 +47,43 @@
     <button id="pruefen">Turnier-Link prüfen</button>
     <p id="status">Gib einen Turnier.de-Link ein, um zu beginnen.</p>
   </main>
-  <script>
-    document.getElementById("pruefen").addEventListener("click", async () => {
-      const link = document.getElementById("turnierlink").value.trim();
-      const status = document.getElementById("status");
-      if (!link) {
-        status.textContent = "Bitte zuerst einen Turnier.de-Link eingeben.";
-        return;
-      }
-      if (!/^https:\/\/([a-z0-9-]+\.)?turnier\.de\//i.test(link)) {
-        status.textContent = "Bitte einen gültigen HTTPS-Link von turnier.de eingeben.";
-        return;
-      }
-      status.textContent =
-        "Link erkannt. Die automatische Ermittlung von Spielern und DBV-Ligahistorien ist noch nicht eingerichtet.";
+<script>
+document.getElementById("pruefen").addEventListener("click", async () => {
+  const link = document.getElementById("turnierlink").value.trim();
+  const status = document.getElementById("status");
+
+  if (!link) {
+    status.textContent = "Bitte zuerst einen Turnier.de-Link eingeben.";
+    return;
+  }
+
+  if (!/^https:\/\/([a-z0-9-]+\.)?turnier\.de\//i.test(link)) {
+    status.textContent = "Bitte einen gültigen HTTPS-Link von turnier.de eingeben.";
+    return;
+  }
+
+  status.textContent = "Turnier wird analysiert. Bitte warten …";
+
+  try {
+    const response = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: link })
     });
-  </script>
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      status.textContent = result.detail || "Die Analyse ist fehlgeschlagen.";
+      return;
+    }
+
+    status.textContent =
+      "Analyse abgeschlossen. Erkannte Spieler: " + result.count;
+  } catch (error) {
+    status.textContent = "Verbindung zum Server fehlgeschlagen.";
+  }
+});
+</script>
 </body>
 </html>

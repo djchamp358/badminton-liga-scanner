@@ -228,7 +228,7 @@ async def analyze(req: AnalyzeRequest):
             raise HTTPException(502, f"Turnier.de konnte nicht abgerufen werden: {e}")
         players = event_players(html, req.url)
         if not players:
-            raise HTTPException(422, "Auf der Seite wurden keine Teilnehmer-Links erkannt. Bitte den direkten Konkurrenz-Link (z.B. HD C) verwenden.")
+            raise HTTPException(422, f"Keine Spielerlinks erkannt. Geladener HTML-Text: {len(html)} Zeichen. Bitte Diagnose prüfen.")
         rows = []
         for i, p in enumerate(players):
             if i:

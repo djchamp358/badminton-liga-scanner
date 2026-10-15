@@ -63,10 +63,7 @@ def put_cache(key: str, value: Any):
 
 async def fetch(client: httpx.AsyncClient, url: str) -> str:
     if not allowed(url):
-        raise HTTPException(
-            400,
-            "Nur DBV/Turnier.de-Links werden akzeptiert."
-        )
+        raise HTTPException(400, "Nur DBV/Turnier.de-Links werden akzeptiert.")
 
     r = await client.get(url, follow_redirects=True)
     print("DEBUG Turnier.de:", r.status_code, r.url)

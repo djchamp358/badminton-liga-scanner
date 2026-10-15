@@ -65,6 +65,7 @@ async def fetch(client: httpx.AsyncClient, url: str) -> str:
     if not allowed(url):
         raise HTTPException(400, "Nur DBV/Turnier.de-Links werden akzeptiert.")
     r = await client.get(url, follow_redirects=True)
+    print("DEBUG Turnier.de:", r.status_code, r.url)
     r.raise_for_status()
     if "text/html" not in r.headers.get("content-type", "text/html"):
         raise HTTPException(502, "Die Zielseite liefert kein HTML.")

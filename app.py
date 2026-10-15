@@ -67,6 +67,11 @@ async def fetch(client: httpx.AsyncClient, url: str) -> str:
     r = await client.get(url, follow_redirects=True)
     print("DEBUG Turnier.de:", r.status_code, r.url)
     r.raise_for_status()
+        if "cookiewall" in str(r.url).lower():
+            raise HTTPException(
+                502,
+                "Turnier.de liefert dem Scanner eine Cookie-Seite statt der Teilnehmerliste."
+            )
     if "text/html" not in r.headers.get("content-type", "text/html"):
         raise HTTPException(502, "Die Zielseite liefert kein HTML.")
     return r.text

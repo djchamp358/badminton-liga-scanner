@@ -85,10 +85,7 @@ def event_players(html: str, base: str) -> list[dict[str, str]]:
         if not text or len(text) < 3 or len(text) > 80:
             continue
 
-        if not any(
-            x in path
-            for x in ("/sport/player.aspx", "/tournament/", "/player/")
-        ):
+        if not any(x in path for x in ("/sport/player.aspx", "/tournament/", "/player/")):
             continue
 
         if href in seen:

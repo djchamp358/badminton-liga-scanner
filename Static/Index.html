@@ -79,7 +79,8 @@ document.getElementById("pruefen").addEventListener("click", async () => {
     }
 
     status.textContent =
-      "Analyse abgeschlossen. Erkannte Spieler: " + result.count;
+  "Analyse abgeschlossen. Erkannte Einträge: " + result.count +
+  "\n" + JSON.stringify(result.players, null, 2);
   } catch (error) {
     status.textContent = "Verbindung zum Server fehlgeschlagen.";
   }

@@ -94,7 +94,11 @@ def event_players(html: str, base: str) -> list[dict[str, str]]:
         seen.add(href)
         candidates.append({"name": text, "url": href})
     # If a page contains a pair twice (e.g. draw + starter list), prefer first occurrence.
-    return candidates[:MAX_PLAYERS]
+    return candidates[:MAX_PLAYERS] or [
+    {"name": clean(a.get_text(" ")), "url": urljoin(base, a["href"])}
+    for a in soup.find_all("a", href=True)
+    if clean(a.get_text(" ")) and len(clean(a.get_text(" "))) >= 3
+][:20]
 
 
 def find_profile_url(html: str, base: str) -> str | None:

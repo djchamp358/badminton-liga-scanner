@@ -75,30 +75,44 @@ def event_players(html: str, base: str) -> list[dict[str, str]]:
     soup = BeautifulSoup(html, "lxml")
     candidates: list[dict[str, str]] = []
     seen = set()
-    # Current Turnier.de event pages link entries via /sport/player.aspx and may redirect
-    # to /tournament/.../player/... . Keep only links whose text looks like a player name.
+
+    # Spielerlinks auf Turnier.de erkennen
     for a in soup.find_all("a", href=True):
         href = urljoin(base, a["href"])
         text = clean(a.get_text(" "))
         path = urlparse(href).path.lower()
+
         if not text or len(text) < 3 or len(text) > 80:
             continue
-        if not any(x in path for x in ("/sport/player.aspx", "/tournament/", "/player/")):
-    continue
+
+        if not any(
+            x in path
+            for x in ("/sport/player.aspx", "/tournament/", "/player/")
+        ):
+            continue
+
         if href in seen:
             continue
-        # Ignore navigation links and repeated references. Tournament player links
-        # normally carry a numeric player id in the final path/query.
+
         if text.lower() in {"spieler", "player", "favorit", "log in"}:
             continue
+
         seen.add(href)
         candidates.append({"name": text, "url": href})
-    # If a page contains a pair twice (e.g. draw + starter list), prefer first occurrence.
-    return candidates[:MAX_PLAYERS] or [
-    {"name": clean(a.get_text(" ")), "url": urljoin(base, a["href"])}
-    for a in soup.find_all("a", href=True)
-    if clean(a.get_text(" ")) and len(clean(a.get_text(" "))) >= 3
-][:20]
+
+    # Diagnose: Wenn keine Spielerlinks gefunden werden,
+    # ersatzweise bis zu 20 Links mit Text zurückgeben.
+    if candidates:
+        return candidates[:MAX_PLAYERS]
+
+    return [
+        {
+            "name": clean(a.get_text(" ")),
+            "url": urljoin(base, a["href"]),
+        }
+        for a in soup.find_all("a", href=True)
+        if clean(a.get_text(" ")) and len(clean(a.get_text(" "))) >= 3
+    ][:20]
 
 
 def find_profile_url(html: str, base: str) -> str | None:

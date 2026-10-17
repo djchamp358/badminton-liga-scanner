@@ -238,9 +238,24 @@ async def analyze_player(client: httpx.AsyncClient, p: dict[str, str], seasons: 
 async def index():
     return FileResponse(str(Path(__file__).resolve().parent / "Static" / "Index.html"))
 
-@APP.get("/health")
-async def health():
-    return {"ok": True, "service": "badminton-liga-scanner"}
+@APP.get("/api/test-profile")
+async def test_profile():
+    url = "https://dbv.turnier.de/player-profile/9e5df2bf-deff-47ad-b476-593b15c34daf/leagues"
+
+    async with httpx.AsyncClient(
+        headers={"User-Agent": UA, "Accept-Language": "de-DE,de;q=0.9"},
+        timeout=TIMEOUT,
+    ) as client:
+        html = await fetch(client, url)
+
+    soup = BeautifulSoup(html, "lxml")
+    return {
+        "ok": True,
+        "url": url,
+        "title": clean(soup.title.get_text()) if soup.title else "",
+        "html_length": len(html),
+        "preview": clean(soup.get_text(" "))[:1000],
+    }
 
 @APP.post("/api/analyze")
 async def analyze(req: AnalyzeRequest):

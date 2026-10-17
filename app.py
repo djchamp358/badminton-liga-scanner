@@ -240,7 +240,7 @@ async def index():
 
 @APP.get("/api/test-profile")
 async def test_profile():
-    url = "https://dbv.turnier.de/player-profile/9e5df2bf-deff-47ad-b476-593b15c34daf/leagues"
+    url = "https://dbv.turnier.de/"
 
     try:
         async with httpx.AsyncClient(

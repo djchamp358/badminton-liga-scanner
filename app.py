@@ -242,20 +242,33 @@ async def index():
 async def test_profile():
     url = "https://dbv.turnier.de/player-profile/9e5df2bf-deff-47ad-b476-593b15c34daf/leagues"
 
-    async with httpx.AsyncClient(
-        headers={"User-Agent": UA, "Accept-Language": "de-DE,de;q=0.9"},
-        timeout=TIMEOUT,
-    ) as client:
-        html = await fetch(client, url)
+    try:
+        async with httpx.AsyncClient(
+            headers={"User-Agent": UA, "Accept-Language": "de-DE,de;q=0.9"},
+            timeout=httpx.Timeout(45.0, connect=10.0),
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(url)
 
-    soup = BeautifulSoup(html, "lxml")
-    return {
-        "ok": True,
-        "url": url,
-        "title": clean(soup.title.get_text()) if soup.title else "",
-        "html_length": len(html),
-        "preview": clean(soup.get_text(" "))[:1000],
-    }
+        return {
+            "ok": True,
+            "status_code": response.status_code,
+            "final_url": str(response.url),
+            "content_type": response.headers.get("content-type", ""),
+            "html_length": len(response.text),
+            "preview": clean(BeautifulSoup(response.text, "lxml").get_text(" "))[:1000],
+        }
+
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "error": "Zeitüberschreitung beim Verbindungsaufbau zu Turnier.de.",
+        }
+    except httpx.HTTPError as exc:
+        return {
+            "ok": False,
+            "error": f"HTTP-Verbindungsfehler: {type(exc).__name__}",
+        }
 
 @APP.post("/api/analyze")
 async def analyze(req: AnalyzeRequest):

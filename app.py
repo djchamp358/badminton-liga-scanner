@@ -259,10 +259,10 @@ async def test_profile():
             "preview": clean(BeautifulSoup(response.text, "lxml").get_text(" "))[:1000],
         }
 
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as exc:
         return {
             "ok": False,
-            "error": "Zeitüberschreitung beim Verbindungsaufbau zu Turnier.de.",
+            "error": f"Timeout: {type(exc).__name__}: {str(exc)}",
         }
     except httpx.HTTPError as exc:
         return {

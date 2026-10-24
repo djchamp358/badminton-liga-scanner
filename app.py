@@ -66,6 +66,8 @@ async def fetch(client: httpx.AsyncClient, url: str) -> str:
         raise HTTPException(400, "Nur DBV/Turnier.de-Links werden akzeptiert.")
 
     r = await client.get(url, follow_redirects=True)
+    print("DEBUG STATUS:", r.status_code)
+    print("DEBUG URL:", r.url)
     print("DEBUG Turnier.de:", r.status_code, r.url)
     print("DEBUG Cookies:", list(client.cookies.keys()))
     r.raise_for_status()

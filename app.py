@@ -104,7 +104,7 @@ async def fetch(client: httpx.AsyncClient, url: str) -> str:
         traceback.print_exc()
         raise HTTPException(
             502, f"Browser-Abruf fehlgeschlagen: {type(e).__name__}: {e}"
-    )
+        )
 
 
 def event_players(html: str, base: str) -> list[dict[str, str]]:

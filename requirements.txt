@@ -3,3 +3,4 @@ uvicorn[standard]==0.34.0
 httpx==0.28.1
 beautifulsoup4==4.13.4
 lxml==5.3.2
+playwright

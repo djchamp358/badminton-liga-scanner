@@ -65,23 +65,44 @@ async def fetch(client: httpx.AsyncClient, url: str) -> str:
     if not allowed(url):
         raise HTTPException(400, "Nur DBV/Turnier.de-Links werden akzeptiert.")
 
-    r = await client.get(url, follow_redirects=True)
-    print("DEBUG STATUS:", r.status_code)
-    print("DEBUG URL:", r.url)
-    print("DEBUG Turnier.de:", r.status_code, r.url)
-    print("DEBUG Cookies:", list(client.cookies.keys()))
-    r.raise_for_status()
+    from playwright.async_api import async_playwright
 
-    if "cookiewall" in str(r.url).lower():
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page(
+                locale="de-DE",
+                accept_downloads=False,
+            )
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+            if "cookiewall" in page.url.lower():
+                await page.get_by_role(
+                    "button", name="Accept", exact=False
+                ).click(timeout=10000)
+                await page.wait_for_timeout(2000)
+                await page.goto(
+                    url, wait_until="domcontentloaded", timeout=60000
+                )
+
+            final_url = page.url
+            html = await page.content()
+            await browser.close()
+
+            if "cookiewall" in final_url.lower():
+                raise HTTPException(
+                    502,
+                    "Turnier.de zeigt weiterhin die Cookie-Seite."
+                )
+
+            return html
+
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
-            502,
-            "Turnier.de liefert dem Scanner eine Cookie-Seite statt der Teilnehmerliste."
+            502, f"Browser-Abruf fehlgeschlagen: {type(e).__name__}: {e}"
         )
-
-    if "text/html" not in r.headers.get("content-type", "text/html"):
-        raise HTTPException(502, "Die Zielseite liefert kein HTML.")
-
-    return r.text
 
 
 def event_players(html: str, base: str) -> list[dict[str, str]]:

@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="Badminton Liga-Scanner", version="1.0.0")
-APP.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "Static")), name="static")
+app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "Static")), name="static")
 
 ALLOWED_HOSTS = {"dbv.turnier.de", "turnier.de"}
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"
@@ -263,11 +263,11 @@ async def analyze_player(client: httpx.AsyncClient, p: dict[str, str], seasons: 
         return {**p, "profile_url": None, "leagues": [], "status": f"Fehler: {str(e)[:120]}"}
 
 
-@APP.get("/")
+@app.get("/")
 async def index():
     return FileResponse(str(Path(__file__).resolve().parent / "Static" / "Index.html"))
 
-@APP.get("/api/test-profile")
+@app.get("/api/test-profile")
 async def test_profile():
     url = "https://dbv.turnier.de/"
 
@@ -299,7 +299,7 @@ async def test_profile():
             "error": f"HTTP-Verbindungsfehler: {type(exc).__name__}",
         }
 
-@APP.post("/api/analyze")
+@app.post("/api/analyze")
 async def analyze(req: AnalyzeRequest):
     if not allowed(req.url):
         raise HTTPException(400, "Bitte einen dbv.turnier.de- oder turnier.de-Link verwenden.")
@@ -321,7 +321,7 @@ async def analyze(req: AnalyzeRequest):
             row["pair_no"] = i // 2 + 1
         return {"source_url": req.url, "count": len(rows), "players": rows}
 
-@APP.post("/api/csv")
+@app.post("/api/csv")
 async def make_csv(payload: dict):
     players = payload.get("players") or []
     buf = io.StringIO(); w = csv.writer(buf, delimiter=";", lineterminator="\n")

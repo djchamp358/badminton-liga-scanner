@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-APP = FastAPI(title="Badminton Liga-Scanner", version="1.0.0")
+app = FastAPI(title="Badminton Liga-Scanner", version="1.0.0")
 APP.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "Static")), name="static")
 
 ALLOWED_HOSTS = {"dbv.turnier.de", "turnier.de"}

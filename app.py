@@ -65,12 +65,13 @@ async def fetch(client: httpx.AsyncClient, url: str) -> str:
     if not allowed(url):
         raise HTTPException(400, "Nur DBV/Turnier.de-Links werden akzeptiert.")
 
+    import os
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/ms-playwright"
+
     from playwright.async_api import async_playwright
 
     try:
         async with async_playwright() as p:
-            import os
-            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/ms-playwright"
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page(
                 locale="de-DE",

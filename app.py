@@ -69,6 +69,8 @@ async def fetch(client: httpx.AsyncClient, url: str) -> str:
 
     try:
         async with async_playwright() as p:
+            import os
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/ms-playwright"
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page(
                 locale="de-DE",

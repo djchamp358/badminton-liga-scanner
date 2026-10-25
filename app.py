@@ -66,7 +66,7 @@ async def fetch(client: httpx.AsyncClient, url: str) -> str:
         raise HTTPException(400, "Nur DBV/Turnier.de-Links werden akzeptiert.")
 
     import os
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/ms-playwright"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/tmp/ms-playwright"
 
     from playwright.async_api import async_playwright
 

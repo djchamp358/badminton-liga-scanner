@@ -77,16 +77,16 @@ async def fetch(client: httpx.AsyncClient, url: str) -> str:
                 locale="de-DE",
                 accept_downloads=False,
             )
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.goto(url, wait_until="commit", timeout=60000)
+            await page.wait_for_timeout(3000)
 
             if "cookiewall" in page.url.lower():
                 await page.get_by_role(
                     "button", name="Accept", exact=False
                 ).click(timeout=10000)
                 await page.wait_for_timeout(2000)
-                await page.goto(
-                    url, wait_until="domcontentloaded", timeout=60000
-                )
+                await page.goto(url, wait_until="commit", timeout=60000)
+                await page.wait_for_timeout(3000)
 
             final_url = page.url
             html = await page.content()

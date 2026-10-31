@@ -269,35 +269,38 @@ async def index():
 
 @app.get("/api/test-profile")
 async def test_profile():
-    url = "https://dbv.turnier.de/"
+    targets = {
+        "example": "https://example.com/",
+        "turnier": "https://dbv.turnier.de/",
+    }
+    results = {}
 
-    try:
-        async with httpx.AsyncClient(
-            headers={"User-Agent": UA, "Accept-Language": "de-DE,de;q=0.9"},
-            timeout=httpx.Timeout(45.0, connect=10.0),
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(url)
+    async with httpx.AsyncClient(
+        headers={"User-Agent": UA},
+        timeout=httpx.Timeout(15.0, connect=8.0),
+        follow_redirects=True,
+    ) as client:
+        for name, url in targets.items():
+            try:
+                response = await client.get(url)
+                results[name] = {
+                    "ok": True,
+                    "status_code": response.status_code,
+                    "final_url": str(response.url),
+                    "html_length": len(response.text),
+                }
+            except httpx.TimeoutException as exc:
+                results[name] = {
+                    "ok": False,
+                    "error": f"Timeout: {type(exc).__name__}",
+                }
+            except httpx.HTTPError as exc:
+                results[name] = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                }
 
-        return {
-            "ok": True,
-            "status_code": response.status_code,
-            "final_url": str(response.url),
-            "content_type": response.headers.get("content-type", ""),
-            "html_length": len(response.text),
-            "preview": clean(BeautifulSoup(response.text, "lxml").get_text(" "))[:1000],
-        }
-
-    except httpx.TimeoutException as exc:
-        return {
-            "ok": False,
-            "error": f"Timeout: {type(exc).__name__}: {str(exc)}",
-        }
-    except httpx.HTTPError as exc:
-        return {
-            "ok": False,
-            "error": f"HTTP-Verbindungsfehler: {type(exc).__name__}",
-        }
+    return results
 
 @app.post("/api/analyze")
 async def analyze(req: AnalyzeRequest):

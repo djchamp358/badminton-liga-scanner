@@ -4,7 +4,6 @@ import asyncio
 import csv
 import hashlib
 import hmac
-import html
 import io
 import os
 import re
@@ -22,12 +21,13 @@ from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "Static"
-app = FastAPI(title="Badminton Liga-Scanner", version="2.0.0")
+app = FastAPI(title="Badminton Liga-Scanner", version="2.1.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 ALLOWED_HOSTS = {"dbv.turnier.de", "turnier.de"}
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"
-MAX_PLAYERS = 80
+MAX_PLAYERS = 120
+MAX_COMPETITIONS = 30
 CACHE_TTL = 7 * 24 * 60 * 60
 MAX_CACHE_ROWS = 1000
 FETCH_INTERVAL_SECONDS = 5
@@ -127,10 +127,8 @@ async def login(request: Request):
     stamp = str(int(time.time()))
     token = stamp + "." + _signature(stamp)
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie(
-        "scanner_session", token, max_age=14 * 86400, httponly=True,
-        secure=True, samesite="strict", path="/"
-    )
+    response.set_cookie("scanner_session", token, max_age=14 * 86400, httponly=True,
+                        secure=True, samesite="strict", path="/")
     return response
 
 
@@ -171,8 +169,7 @@ def _cache_put(key: str, value: Any):
         )
         conn.execute("""
             DELETE FROM scanner_cache WHERE cache_key IN (
-              SELECT cache_key FROM scanner_cache ORDER BY created_at DESC
-              OFFSET %s
+              SELECT cache_key FROM scanner_cache ORDER BY created_at DESC OFFSET %s
             )
         """, (MAX_CACHE_ROWS,))
         conn.commit()
@@ -207,12 +204,12 @@ async def fetch(url: str) -> str:
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page(locale="de-DE", accept_downloads=False)
+                page = await browser.new_page(locale="de-DE", user_agent=UA, accept_downloads=False)
                 await page.goto(url, wait_until="commit", timeout=60000)
                 await page.wait_for_timeout(2500)
                 if "cookiewall" in page.url.lower():
                     try:
-                        await page.get_by_role("button", name="Accept", exact=False).click(timeout=8000)
+                        await page.get_by_role("button", name=re.compile("accept|akzeptieren|zustimmen", re.I)).click(timeout=8000)
                         await page.wait_for_timeout(1500)
                         await page.goto(url, wait_until="commit", timeout=60000)
                         await page.wait_for_timeout(2500)
@@ -234,26 +231,77 @@ async def fetch(url: str) -> str:
                 await browser.close()
 
 
-def event_players(content: str, base: str) -> list[dict[str, str]]:
+def competition_urls(content: str, base: str) -> list[tuple[str, str]]:
+    """Liest die echten Konkurrenz-Unterseiten aus events.aspx aus."""
+    soup = BeautifulSoup(content, "lxml")
+    found, seen = [], set()
+    for a in soup.find_all("a", href=True):
+        href = urljoin(base, a["href"])
+        parsed = urlparse(href)
+        if parsed.hostname not in ALLOWED_HOSTS or parsed.path.lower().rstrip("/") != "/sport/event.aspx":
+            continue
+        params = parse_qs(parsed.query)
+        if "event" not in params or "id" not in params:
+            continue
+        name = clean(a.get_text(" "))
+        if not name or href in seen:
+            continue
+        seen.add(href)
+        found.append((name, href))
+    return found[:MAX_COMPETITIONS]
+
+
+def player_links(content: str, base: str) -> list[dict[str, str]]:
+    """Erkennt ausschließlich echte Spieler-URLs; keine Navigations-Fallbacks."""
     soup = BeautifulSoup(content, "lxml")
     candidates, seen = [], set()
     for a in soup.find_all("a", href=True):
         href = urljoin(base, a["href"])
-        text = clean(a.get_text(" "))
-        path = urlparse(href).path.lower()
-        if not text or not 3 <= len(text) <= 80:
+        parsed = urlparse(href)
+        path = parsed.path.lower()
+        is_player = (
+            path.rstrip("/") == "/sport/player.aspx"
+            or re.search(r"/tournament/[^/]+/player/[^/]+/?$", path)
+            or "/player-profile/" in path
+        )
+        if parsed.hostname not in ALLOWED_HOSTS or not is_player:
             continue
-        if not any(x in path for x in ("/sport/player.aspx", "/tournament/", "/player/")):
+        name = clean(a.get_text(" "))
+        name = re.sub(r"\s*\[[^\]]+\]\s*$", "", name).strip()
+        if not name or len(name) < 3 or len(name) > 80:
             continue
-        if href in seen or text.lower() in {"spieler", "player", "favorit", "log in"}:
+        if name.lower() in {"spieler", "player", "favorit", "log in"}:
             continue
-        seen.add(href)
-        candidates.append({"name": text, "url": href})
-    if candidates:
-        return candidates[:MAX_PLAYERS]
-    return [{"name": clean(a.get_text(" ")), "url": urljoin(base, a["href"])}
-            for a in soup.find_all("a", href=True)
-            if clean(a.get_text(" ")) and len(clean(a.get_text(" "))) >= 3][:20]
+        # Turnierseiten enthalten dieselben Spieler mehrfach (Starterliste/Spielplan).
+        # URL-Parameter player bzw. letzte Pfad-ID dienen als stabile Identität.
+        identity = (parse_qs(parsed.query).get("player", [""])[0]
+                    or re.search(r"/player/([^/]+)", path).group(1)
+                    if re.search(r"/player/([^/]+)", path) else href)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        candidates.append({"name": name, "url": href})
+    return candidates
+
+
+async def event_players(content: str, base: str) -> list[dict[str, str]]:
+    # Spieler zuerst direkt auf der Übersichtsseite suchen, danach Konkurrenzseiten.
+    players = player_links(content, base)
+    seen = {p["url"] for p in players}
+    competitions = competition_urls(content, base)
+    for competition_name, competition_url in competitions:
+        try:
+            subpage = await fetch(competition_url)
+        except HTTPException:
+            continue
+        for player in player_links(subpage, competition_url):
+            if player["url"] not in seen:
+                player["competition"] = competition_name
+                players.append(player)
+                seen.add(player["url"])
+            if len(players) >= MAX_PLAYERS:
+                return players[:MAX_PLAYERS]
+    return players[:MAX_PLAYERS]
 
 
 def find_profile_url(content: str, base: str) -> str | None:
@@ -382,9 +430,10 @@ async def analyze(req: AnalyzeRequest, request: Request):
     if not allowed(req.url):
         raise HTTPException(400, "Bitte einen sicheren HTTPS-Link von dbv.turnier.de oder turnier.de verwenden.")
     html_content = await fetch(req.url)
-    players = event_players(html_content, req.url)
+    players = await event_players(html_content, req.url)
     if not players:
-        raise HTTPException(422, f"Keine Spielerlinks erkannt. Geladener HTML-Text: {len(html_content)} Zeichen.")
+        competitions = competition_urls(html_content, req.url)
+        raise HTTPException(422, f"Keine Spielerlinks erkannt. {len(competitions)} Konkurrenz-Unterseiten gefunden. Bitte prüfen, ob das Turnier Meldungen/Spieler enthält.")
     rows = []
     for i, player in enumerate(players):
         if i and req.delay_ms:
@@ -400,7 +449,7 @@ async def make_csv(payload: dict, request: Request):
     require_auth(request)
     players = payload.get("players") or []
     buf = io.StringIO()
-    writer = csv.writer(buf, delimiter=";", lineterminator="\n")
+    writer = csv.writer(buf, delimiter=";", lineterminator="\\n")
     writer.writerow(["Paar", "Spieler", "Aktuelle Liga", "Verein", "Liga-Historie", "DBV-Profil", "Status"])
     for player in players:
         leagues = player.get("leagues") or []

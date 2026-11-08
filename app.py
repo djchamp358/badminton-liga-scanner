@@ -2,30 +2,38 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
+import hmac
+import html
 import io
+import os
 import re
 import time
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, parse_qs
 
-import httpx
+import psycopg
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Badminton Liga-Scanner", version="1.0.0")
-app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "Static")), name="static")
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "Static"
+app = FastAPI(title="Badminton Liga-Scanner", version="2.0.0")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 ALLOWED_HOSTS = {"dbv.turnier.de", "turnier.de"}
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"
-TIMEOUT = httpx.Timeout(25.0, connect=15.0)
-CACHE: OrderedDict[str, tuple[float, Any]] = OrderedDict()
-CACHE_TTL = 60 * 60 * 6
 MAX_PLAYERS = 80
+CACHE_TTL = 7 * 24 * 60 * 60
+MAX_CACHE_ROWS = 1000
+FETCH_INTERVAL_SECONDS = 5
+_fetch_lock = asyncio.Lock()
+_last_fetch = 0.0
+
 
 class AnalyzeRequest(BaseModel):
     url: str
@@ -33,126 +41,223 @@ class AnalyzeRequest(BaseModel):
     delay_ms: int = Field(default=250, ge=0, le=2000)
 
 
-def clean(s: str) -> str:
-    return re.sub(r"\s+", " ", s or "").strip()
+def settings() -> tuple[str, str]:
+    password = os.getenv("APP_PASSWORD", "")
+    secret = os.getenv("SESSION_SECRET", "")
+    if len(password) < 12:
+        raise RuntimeError("APP_PASSWORD fehlt oder ist kürzer als 12 Zeichen.")
+    if len(secret) < 32:
+        raise RuntimeError("SESSION_SECRET fehlt oder ist kürzer als 32 Zeichen.")
+    if not os.getenv("DATABASE_URL"):
+        raise RuntimeError("DATABASE_URL fehlt. Bitte die verbundene Blitz-Datenbank prüfen.")
+    return password, secret
+
+
+def db_connect():
+    return psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=15)
+
+
+def init_db():
+    settings()
+    with db_connect() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scanner_cache (
+                cache_key TEXT PRIMARY KEY,
+                cache_value JSONB NOT NULL,
+                created_at DOUBLE PRECISION NOT NULL
+            )
+        """)
+        conn.execute("DELETE FROM scanner_cache WHERE created_at < %s", (time.time() - CACHE_TTL,))
+        conn.commit()
+
+
+@app.on_event("startup")
+async def startup():
+    await asyncio.to_thread(init_db)
+
+
+def _signature(stamp: str) -> str:
+    _, secret = settings()
+    return hmac.new(secret.encode(), stamp.encode(), hashlib.sha256).hexdigest()
+
+
+def _valid_session(request: Request) -> bool:
+    token = request.cookies.get("scanner_session", "")
+    try:
+        stamp, supplied = token.split(".", 1)
+        issued = int(stamp)
+        if issued > int(time.time()) + 60 or time.time() - issued > 14 * 86400:
+            return False
+        return hmac.compare_digest(_signature(stamp), supplied)
+    except Exception:
+        return False
+
+
+def require_auth(request: Request):
+    if not _valid_session(request):
+        raise HTTPException(401, "Bitte zuerst anmelden.")
+
+
+LOGIN_HTML = """<!doctype html><html lang="de"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Anmeldung</title>
+<style>body{font:16px Arial;background:#f4f7fb;color:#172033;max-width:420px;margin:12vh auto;padding:20px}
+main{background:white;padding:26px;border-radius:14px;box-shadow:0 2px 12px #0001}
+input,button{box-sizing:border-box;width:100%;padding:13px;margin:9px 0;font-size:16px;border-radius:8px}
+input{border:1px solid #bbb}button{background:#176b46;color:white;border:0;font-weight:bold}
+#error{color:#a21d1d}</style><main><h1>Badminton Liga-Scanner</h1>
+<p>Bitte mit deinem persönlichen Passwort anmelden.</p><p id="error">__ERROR__</p>
+<form method="post" action="/login"><input type="password" name="password" placeholder="Passwort" required autofocus>
+<button type="submit">Anmelden</button></form></main></html>"""
+
+
+@app.get("/")
+async def index(request: Request):
+    if not _valid_session(request):
+        return HTMLResponse(LOGIN_HTML.replace("__ERROR__", ""))
+    return FileResponse(str(STATIC_DIR / "Index.html"))
+
+
+@app.post("/login")
+async def login(request: Request):
+    password, _ = settings()
+    body = (await request.body()).decode("utf-8", "replace")
+    supplied = parse_qs(body).get("password", [""])[0]
+    if not hmac.compare_digest(supplied, password):
+        return HTMLResponse(LOGIN_HTML.replace("__ERROR__", "Passwort nicht richtig."), status_code=401)
+    stamp = str(int(time.time()))
+    token = stamp + "." + _signature(stamp)
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        "scanner_session", token, max_age=14 * 86400, httponly=True,
+        secure=True, samesite="strict", path="/"
+    )
+    return response
+
+
+@app.post("/logout")
+async def logout():
+    response = RedirectResponse("/", status_code=303)
+    response.delete_cookie("scanner_session", path="/", secure=True, httponly=True, samesite="strict")
+    return response
 
 
 def allowed(url: str) -> bool:
     p = urlparse(url)
-    return p.scheme in {"http", "https"} and p.hostname in ALLOWED_HOSTS
+    return p.scheme == "https" and p.hostname in ALLOWED_HOSTS and not p.username and not p.password
 
 
-def cached(key: str):
-    hit = CACHE.get(key)
-    if not hit:
-        return None
-    ts, value = hit
-    if time.time() - ts > CACHE_TTL:
-        CACHE.pop(key, None)
-        return None
-    CACHE.move_to_end(key)
-    return value
+def clean(s: str) -> str:
+    return re.sub(r"\s+", " ", s or "").strip()
 
 
-def put_cache(key: str, value: Any):
-    CACHE[key] = (time.time(), value)
-    CACHE.move_to_end(key)
-    while len(CACHE) > 300:
-        CACHE.popitem(last=False)
+def _cache_get(key: str):
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT cache_value FROM scanner_cache WHERE cache_key=%s AND created_at >= %s",
+            (key, time.time() - CACHE_TTL)
+        ).fetchone()
+        return row[0] if row else None
 
 
-async def fetch(client: httpx.AsyncClient, url: str) -> str:
-    if not allowed(url):
-        raise HTTPException(400, "Nur DBV/Turnier.de-Links werden akzeptiert.")
-
-    import os
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/ms-playwright"
-
-    from playwright.async_api import async_playwright
-
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(
-                locale="de-DE",
-                accept_downloads=False,
-            )
-            await page.goto(url, wait_until="commit", timeout=60000)
-            await page.wait_for_timeout(3000)
-
-            if "cookiewall" in page.url.lower():
-                await page.get_by_role(
-                    "button", name="Accept", exact=False
-                ).click(timeout=10000)
-                await page.wait_for_timeout(2000)
-                await page.goto(url, wait_until="commit", timeout=60000)
-                await page.wait_for_timeout(3000)
-
-            final_url = page.url
-            html = await page.content()
-            await browser.close()
-
-            if "cookiewall" in final_url.lower():
-                raise HTTPException(
-                    502,
-                    "Turnier.de zeigt weiterhin die Cookie-Seite."
-                )
-
-            return html
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(
-            502, f"Browser-Abruf fehlgeschlagen: {type(e).__name__}: {e}"
+def _cache_put(key: str, value: Any):
+    import json
+    with db_connect() as conn:
+        conn.execute(
+            """INSERT INTO scanner_cache(cache_key,cache_value,created_at)
+               VALUES (%s,%s::jsonb,%s)
+               ON CONFLICT(cache_key) DO UPDATE SET
+               cache_value=EXCLUDED.cache_value, created_at=EXCLUDED.created_at""",
+            (key, json.dumps(value, ensure_ascii=False), time.time())
         )
+        conn.execute("""
+            DELETE FROM scanner_cache WHERE cache_key IN (
+              SELECT cache_key FROM scanner_cache ORDER BY created_at DESC
+              OFFSET %s
+            )
+        """, (MAX_CACHE_ROWS,))
+        conn.commit()
 
 
-def event_players(html: str, base: str) -> list[dict[str, str]]:
-    soup = BeautifulSoup(html, "lxml")
-    candidates: list[dict[str, str]] = []
-    seen = set()
+async def cache_get(key: str):
+    return await asyncio.to_thread(_cache_get, key)
 
-    # Spielerlinks auf Turnier.de erkennen
+
+async def cache_put(key: str, value: Any):
+    await asyncio.to_thread(_cache_put, key, value)
+
+
+async def fetch(url: str) -> str:
+    global _last_fetch
+    if not allowed(url):
+        raise HTTPException(400, "Nur sichere HTTPS-Links von DBV/Turnier.de werden akzeptiert.")
+    cached_html = await cache_get("html:" + url)
+    if cached_html is not None:
+        return cached_html
+
+    async with _fetch_lock:
+        cached_html = await cache_get("html:" + url)
+        if cached_html is not None:
+            return cached_html
+        wait = FETCH_INTERVAL_SECONDS - (time.monotonic() - _last_fetch)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/ms-playwright"
+        from playwright.async_api import async_playwright
+        browser = None
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page(locale="de-DE", accept_downloads=False)
+                await page.goto(url, wait_until="commit", timeout=60000)
+                await page.wait_for_timeout(2500)
+                if "cookiewall" in page.url.lower():
+                    try:
+                        await page.get_by_role("button", name="Accept", exact=False).click(timeout=8000)
+                        await page.wait_for_timeout(1500)
+                        await page.goto(url, wait_until="commit", timeout=60000)
+                        await page.wait_for_timeout(2500)
+                    except Exception:
+                        pass
+                final_url = page.url
+                content = await page.content()
+                if "cookiewall" in final_url.lower():
+                    raise HTTPException(502, "Turnier.de zeigt weiterhin die Cookie-Seite.")
+                await cache_put("html:" + url, content)
+                _last_fetch = time.monotonic()
+                return content
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(502, f"Browser-Abruf fehlgeschlagen: {type(exc).__name__}: {exc}")
+        finally:
+            if browser:
+                await browser.close()
+
+
+def event_players(content: str, base: str) -> list[dict[str, str]]:
+    soup = BeautifulSoup(content, "lxml")
+    candidates, seen = [], set()
     for a in soup.find_all("a", href=True):
         href = urljoin(base, a["href"])
         text = clean(a.get_text(" "))
         path = urlparse(href).path.lower()
-
-        if not text or len(text) < 3 or len(text) > 80:
+        if not text or not 3 <= len(text) <= 80:
             continue
-
         if not any(x in path for x in ("/sport/player.aspx", "/tournament/", "/player/")):
             continue
-
-        if href in seen:
+        if href in seen or text.lower() in {"spieler", "player", "favorit", "log in"}:
             continue
-
-        if text.lower() in {"spieler", "player", "favorit", "log in"}:
-            continue
-
         seen.add(href)
         candidates.append({"name": text, "url": href})
-
-    # Diagnose: Wenn keine Spielerlinks gefunden werden,
-    # ersatzweise bis zu 20 Links mit Text zurückgeben.
     if candidates:
         return candidates[:MAX_PLAYERS]
-
-    return [
-        {
-            "name": clean(a.get_text(" ")),
-            "url": urljoin(base, a["href"]),
-        }
-        for a in soup.find_all("a", href=True)
-        if clean(a.get_text(" ")) and len(clean(a.get_text(" "))) >= 3
-    ][:20]
+    return [{"name": clean(a.get_text(" ")), "url": urljoin(base, a["href"])}
+            for a in soup.find_all("a", href=True)
+            if clean(a.get_text(" ")) and len(clean(a.get_text(" "))) >= 3][:20]
 
 
-def find_profile_url(html: str, base: str) -> str | None:
-    soup = BeautifulSoup(html, "lxml")
+def find_profile_url(content: str, base: str) -> str | None:
+    soup = BeautifulSoup(content, "lxml")
     for a in soup.find_all("a", href=True):
         href = urljoin(base, a["href"])
         if "/player-profile/" in urlparse(href).path.lower():
@@ -160,179 +265,149 @@ def find_profile_url(html: str, base: str) -> str | None:
     return None
 
 
-def league_pages(html: str, base: str) -> list[tuple[str, str]]:
-    soup = BeautifulSoup(html, "lxml")
-    out: list[tuple[str, str]] = []
-    seen = set()
+def league_pages(content: str, base: str) -> list[tuple[str, str]]:
+    soup = BeautifulSoup(content, "lxml")
+    out, seen = [], set()
     for a in soup.find_all("a", href=True):
         href = urljoin(base, a["href"])
         path = urlparse(href).path.lower()
-        text = clean(a.get_text(" "))
         if not re.search(r"/player-profile/.+/leagues(?:/\d+)?$", path):
             continue
-        m = re.search(r"/leagues/(\d+)$", path)
-        if not m or href in seen:
+        match = re.search(r"/leagues/(\d+)$", path)
+        if not match or href in seen:
             continue
-        year = m.group(1)
+        year = match.group(1)
         if year not in {str(y) for y in range(2010, 2040)}:
             continue
         seen.add(href)
         out.append((year, href))
-    # Also support a profile page whose current season is only exposed as /leagues.
     if not out:
         for a in soup.find_all("a", href=True):
             href = urljoin(base, a["href"])
             if re.search(r"/player-profile/.+/leagues$", urlparse(href).path.lower()):
                 out.append(("current", href))
                 break
-    # newest first
     out.sort(key=lambda x: int(x[0]) if x[0].isdigit() else 9999, reverse=True)
     return out
 
 
-def parse_league_season(html: str, season_code: str, url: str) -> list[dict[str, str]]:
-    soup = BeautifulSoup(html, "lxml")
-    result: list[dict[str, str]] = []
+def parse_league_season(content: str, season_code: str, url: str) -> list[dict[str, str]]:
+    soup = BeautifulSoup(content, "lxml")
+    result = []
     for a in soup.find_all("a", href=True):
         href = urljoin(url, a["href"])
-        path = urlparse(href).path.lower()
-        text = clean(a.get_text(" "))
-        if "/league/" not in path or not text:
+        if "/league/" not in urlparse(href).path.lower():
             continue
-        # DBV renders names like "O19-N1 – O19-N1-KK – (129) Kreisklasse Nord 1".
-        league_name = text
-        if ")" in league_name:
-            league_name = league_name.split(")", 1)[1].strip()
-        if "–" in league_name and league_name.count("–") >= 2:
-            # Prefer the human-readable tail after the classification code.
-            tail = league_name.split("–")[-1].strip()
-            if tail:
-                league_name = tail
-        # Find a nearby heading/strong element for the team.
-        team = ""
-        node = a
+        text = clean(a.get_text(" "))
+        if not text:
+            continue
+        league = text.split(")", 1)[1].strip() if ")" in text else text
+        if "–" in league and league.count("–") >= 2:
+            league = league.split("–")[-1].strip() or league
+        team, node = "", a
         for _ in range(5):
             node = node.parent
             if not node:
                 break
             for tag in node.find_all(["h1", "h2", "h3", "h4", "h5", "strong"], limit=5):
-                t = clean(tag.get_text(" "))
-                if t and t != text and len(t) <= 100:
-                    team = t
+                candidate = clean(tag.get_text(" "))
+                if candidate and candidate != text and len(candidate) <= 100:
+                    team = candidate
                     break
             if team:
                 break
         season = f"{int(season_code)-1}/{str(int(season_code))[-2:]}" if season_code.isdigit() else "aktuell"
-        result.append({"season": season, "league": league_name, "team": team, "url": href})
-    # de-duplicate
-    unique = []
-    keys = set()
-    for x in result:
-        k = (x["season"], x["league"], x["team"])
-        if k not in keys:
-            keys.add(k); unique.append(x)
+        result.append({"season": season, "league": league, "team": team, "url": href})
+    unique, keys = [], set()
+    for item in result:
+        key = (item["season"], item["league"], item["team"])
+        if key not in keys:
+            keys.add(key)
+            unique.append(item)
     return unique
 
 
-async def analyze_player(client: httpx.AsyncClient, p: dict[str, str], seasons: int, delay_ms: int) -> dict[str, Any]:
-    cached_result = cached("player:" + p["url"] + f":{seasons}")
-    if cached_result:
-        return cached_result
+async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
+    key = f"player:{p['url']}:{seasons}"
+    hit = await cache_get(key)
+    if hit is not None:
+        return hit
     try:
-        html = await fetch(client, p["url"])
-        profile = find_profile_url(html, p["url"])
+        content = await fetch(p["url"])
+        profile = find_profile_url(content, p["url"])
         if not profile:
-            out = {**p, "profile_url": None, "leagues": [], "status": "Kein DBV-Profil-Link gefunden"}
-            put_cache("player:" + p["url"] + f":{seasons}", out)
-            return out
-        league_index_url = profile.rstrip("/") + "/leagues"
-        idx_html = await fetch(client, league_index_url)
-        pages = league_pages(idx_html, league_index_url)
-        all_leagues: list[dict[str, str]] = []
+            result = {**p, "profile_url": None, "leagues": [], "status": "Kein DBV-Profil-Link gefunden"}
+            await cache_put(key, result)
+            return result
+        index_url = profile.rstrip("/") + "/leagues"
+        index_html = await fetch(index_url)
+        pages = league_pages(index_html, index_url)
+        leagues = []
         for _, page_url in pages[:seasons]:
-            await asyncio.sleep(delay_ms / 1000)
-            try:
-                page_html = await fetch(client, page_url)
-                all_leagues.extend(parse_league_season(page_html, page_url.rstrip("/").split("/")[-1], page_url))
-            except Exception:
-                continue
-        out = {**p, "profile_url": profile, "leagues": all_leagues, "status": "OK" if all_leagues else "Keine Liga gefunden"}
-        put_cache("player:" + p["url"] + f":{seasons}", out)
-        return out
-    except Exception as e:
-        return {**p, "profile_url": None, "leagues": [], "status": f"Fehler: {str(e)[:120]}"}
+            if delay_ms:
+                await asyncio.sleep(delay_ms / 1000)
+            page_html = await fetch(page_url)
+            leagues.extend(parse_league_season(page_html, page_url.rstrip("/").split("/")[-1], page_url))
+        result = {**p, "profile_url": profile, "leagues": leagues,
+                  "status": "OK" if leagues else "Keine Liga gefunden"}
+        await cache_put(key, result)
+        return result
+    except HTTPException as exc:
+        if exc.status_code == 502:
+            raise
+        return {**p, "profile_url": None, "leagues": [], "status": f"Fehler: {exc.detail}"}
+    except Exception as exc:
+        return {**p, "profile_url": None, "leagues": [], "status": f"Fehler: {str(exc)[:120]}"}
 
 
-@app.get("/")
-async def index():
-    return FileResponse(str(Path(__file__).resolve().parent / "Static" / "Index.html"))
+@app.get("/api/cache-info")
+async def cache_info(request: Request):
+    require_auth(request)
+    def count_rows():
+        with db_connect() as conn:
+            return conn.execute("SELECT COUNT(*) FROM scanner_cache").fetchone()[0]
+    count = await asyncio.to_thread(count_rows)
+    return {"database": "verbunden", "cache_entries": count, "cache_days": 7}
+
 
 @app.get("/api/test-profile")
-async def test_profile():
-    targets = {
-        "example": "https://example.com/",
-        "turnier": "https://dbv.turnier.de/",
-    }
-    results = {}
+async def test_profile(request: Request):
+    require_auth(request)
+    return {"hinweis": "Der DBV-Zugriff wird beim nächsten Scan geprüft. Ein separates Testabrufen würde unnötige Anfragen erzeugen."}
 
-    async with httpx.AsyncClient(
-        headers={"User-Agent": UA},
-        timeout=httpx.Timeout(15.0, connect=8.0),
-        follow_redirects=True,
-    ) as client:
-        for name, url in targets.items():
-            try:
-                response = await client.get(url)
-                results[name] = {
-                    "ok": True,
-                    "status_code": response.status_code,
-                    "final_url": str(response.url),
-                    "html_length": len(response.text),
-                }
-            except httpx.TimeoutException as exc:
-                results[name] = {
-                    "ok": False,
-                    "error": f"Timeout: {type(exc).__name__}",
-                }
-            except httpx.HTTPError as exc:
-                results[name] = {
-                    "ok": False,
-                    "error": f"{type(exc).__name__}: {str(exc)[:200]}",
-                }
-
-    return results
 
 @app.post("/api/analyze")
-async def analyze(req: AnalyzeRequest):
+async def analyze(req: AnalyzeRequest, request: Request):
+    require_auth(request)
     if not allowed(req.url):
-        raise HTTPException(400, "Bitte einen dbv.turnier.de- oder turnier.de-Link verwenden.")
-    async with httpx.AsyncClient(headers={"User-Agent": UA, "Accept-Language": "de-DE,de;q=0.9,en;q=0.7"}, timeout=TIMEOUT) as client:
-        try:
-            html = await fetch(client, req.url)
-        except httpx.HTTPError as e:
-            raise HTTPException(502, f"Turnier.de konnte nicht abgerufen werden: {e}")
-        players = event_players(html, req.url)
-        if not players:
-            raise HTTPException(422, f"Keine Spielerlinks erkannt. Geladener HTML-Text: {len(html)} Zeichen. Bitte Diagnose prüfen.")
-        rows = []
-        for i, p in enumerate(players):
-            if i:
-                await asyncio.sleep(req.delay_ms / 1000)
-            rows.append(await analyze_player(client, p, req.seasons, req.delay_ms))
-        # Pairing is based on the starter-list order on the competition page.
-        for i, row in enumerate(rows):
-            row["pair_no"] = i // 2 + 1
-        return {"source_url": req.url, "count": len(rows), "players": rows}
+        raise HTTPException(400, "Bitte einen sicheren HTTPS-Link von dbv.turnier.de oder turnier.de verwenden.")
+    html_content = await fetch(req.url)
+    players = event_players(html_content, req.url)
+    if not players:
+        raise HTTPException(422, f"Keine Spielerlinks erkannt. Geladener HTML-Text: {len(html_content)} Zeichen.")
+    rows = []
+    for i, player in enumerate(players):
+        if i and req.delay_ms:
+            await asyncio.sleep(req.delay_ms / 1000)
+        rows.append(await analyze_player(player, req.seasons, req.delay_ms))
+    for i, row in enumerate(rows):
+        row["pair_no"] = i // 2 + 1
+    return {"source_url": req.url, "count": len(rows), "players": rows}
+
 
 @app.post("/api/csv")
-async def make_csv(payload: dict):
+async def make_csv(payload: dict, request: Request):
+    require_auth(request)
     players = payload.get("players") or []
-    buf = io.StringIO(); w = csv.writer(buf, delimiter=";", lineterminator="\n")
-    w.writerow(["Paar", "Spieler", "Aktuelle Liga", "Verein", "Liga-Historie", "DBV-Profil", "Status"])
-    for p in players:
-        leagues = p.get("leagues") or []
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";", lineterminator="\n")
+    writer.writerow(["Paar", "Spieler", "Aktuelle Liga", "Verein", "Liga-Historie", "DBV-Profil", "Status"])
+    for player in players:
+        leagues = player.get("leagues") or []
         current = leagues[0] if leagues else {}
         history = " | ".join(f"{x.get('season','')}: {x.get('league','')} ({x.get('team','')})" for x in leagues)
-        w.writerow([p.get("pair_no", ""), p.get("name", ""), current.get("league", ""), current.get("team", ""), history, p.get("profile_url", ""), p.get("status", "")])
+        writer.writerow([player.get("pair_no", ""), player.get("name", ""), current.get("league", ""),
+                         current.get("team", ""), history, player.get("profile_url", ""), player.get("status", "")])
     data = buf.getvalue().encode("utf-8-sig")
-    return StreamingResponse(io.BytesIO(data), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=badminton_liga_scan.csv"})
+    return StreamingResponse(io.BytesIO(data), media_type="text/csv; charset=utf-8",
+                             headers={"Content-Disposition": "attachment; filename=badminton_liga_scan.csv"})

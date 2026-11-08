@@ -1,90 +1,59 @@
 <!DOCTYPE html>
-<html lang="de">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Badminton Liga-Scanner</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 20px;
-      background: #f4f7fb;
-      color: #172033;
-    }
-    main {
-      background: white;
-      padding: 22px;
-      border-radius: 14px;
-      box-shadow: 0 2px 12px #0001;
-    }
-    input, button {
-      box-sizing: border-box;
-      width: 100%;
-      padding: 12px;
-      margin: 8px 0;
-      font-size: 16px;
-      border-radius: 8px;
-    }
-    input { border: 1px solid #bbb; }
-    button {
-      background: #176b46;
-      color: white;
-      border: 0;
-      font-weight: bold;
-    }
-    #status { white-space: pre-wrap; overflow-wrap: anywhere; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Badminton Liga-Scanner</h1>
-    <p>Turnierdaten prüfen und Spielergebnisse für die Liga-Analyse vorbereiten.</p>
-    <label for="turnierlink">Turnier.de-Link</label>
-    <input id="turnierlink" type="url"
-      placeholder="https://dbv.turnier.de/..." />
-    <button id="pruefen">Turnier-Link prüfen</button>
-    <p id="status">Gib einen Turnier.de-Link ein, um zu beginnen.</p>
-  </main>
-<script>
-document.getElementById("pruefen").addEventListener("click", async () => {
-  const link = document.getElementById("turnierlink").value.trim();
-  const status = document.getElementById("status");
-
-  if (!link) {
-    status.textContent = "Bitte zuerst einen Turnier.de-Link eingeben.";
-    return;
+<html lang="de"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Badminton Liga-Scanner</title>
+<style>
+body{font-family:Arial,sans-serif;max-width:1000px;margin:0 auto;padding:20px;background:#f4f7fb;color:#172033}
+main{background:white;padding:22px;border-radius:14px;box-shadow:0 2px 12px #0001}
+input,button{box-sizing:border-box;padding:12px;margin:8px 0;font-size:16px;border-radius:8px}
+input{width:100%;border:1px solid #bbb}button{background:#176b46;color:white;border:0;font-weight:bold;cursor:pointer}
+#scan{width:100%}#status{white-space:pre-wrap;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;margin-top:18px;font-size:14px}th,td{text-align:left;padding:9px;border-bottom:1px solid #ddd;vertical-align:top}
+th{background:#eef3f0}.toolbar{display:flex;gap:10px;flex-wrap:wrap}.toolbar button{flex:1}
+.small{color:#596579;font-size:13px}
+@media(max-width:650px){table{font-size:12px}th,td{padding:6px}}
+</style></head><body><main>
+<div class="toolbar"><h1 style="flex:1">Badminton Liga-Scanner</h1>
+<form method="post" action="/logout"><button type="submit">Abmelden</button></form></div>
+<p>Turnierdaten prüfen und Spielergebnisse für die Liga-Analyse vorbereiten.</p>
+<label for="turnierlink">Turnier.de-Link</label>
+<input id="turnierlink" type="url" placeholder="https://dbv.turnier.de/..." />
+<div class="toolbar"><button id="scan">Turnier analysieren</button><button id="csv" disabled>CSV herunterladen</button></div>
+<p class="small">Ergebnisse werden bis zu 7 Tage in deiner verbundenen Datenbank zwischengespeichert.</p>
+<p id="status">Gib einen Turnier.de-Link ein, um zu beginnen.</p><div id="results"></div>
+</main><script>
+let lastResult=null;
+const status=document.getElementById("status"), csvButton=document.getElementById("csv");
+document.getElementById("scan").addEventListener("click",async()=>{
+ const link=document.getElementById("turnierlink").value.trim();
+ if(!link){status.textContent="Bitte zuerst einen Turnier.de-Link eingeben.";return;}
+ if(!/^https:\/\/([a-z0-9-]+\.)?turnier\.de\//i.test(link)){status.textContent="Bitte einen gültigen HTTPS-Link von turnier.de eingeben.";return;}
+ status.textContent="Analyse läuft. Bitte warten – die Abfragen erfolgen bewusst langsam.";csvButton.disabled=true;
+ document.getElementById("results").replaceChildren();lastResult=null;
+ try{
+  const response=await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:link})});
+  const result=await response.json();
+  if(!response.ok){status.textContent=result.detail||"Die Analyse ist fehlgeschlagen.";return;}
+  lastResult=result;csvButton.disabled=false;
+  status.textContent="Analyse abgeschlossen. Erkannte Einträge: "+result.count;
+  const table=document.createElement("table"),thead=document.createElement("thead"),tbody=document.createElement("tbody");
+  thead.innerHTML="<tr><th>Paar</th><th>Spieler</th><th>Ligen / Saison</th><th>Status</th></tr>";table.append(thead,tbody);
+  for(const p of result.players){
+   const tr=document.createElement("tr"),leagueCell=document.createElement("td");
+   leagueCell.textContent=(p.leagues||[]).map(x=>`${x.season}: ${x.league}${x.team?" – "+x.team:""}`).join("\n")||"Keine Liga-Daten";
+   leagueCell.style.whiteSpace="pre-wrap";
+   for(const value of [p.pair_no,p.name,null,p.status]){const td=document.createElement("td");if(value!==null)td.textContent=value;else td.append(leagueCell);tr.append(td);}
+   tbody.append(tr);
   }
-
-  if (!/^https:\/\/([a-z0-9-]+\.)?turnier\.de\//i.test(link)) {
-    status.textContent = "Bitte einen gültigen HTTPS-Link von turnier.de eingeben.";
-    return;
-  }
-
-  status.textContent = "Turnier wird analysiert. Bitte warten …";
-
-  try {
-    const response = await fetch("/api/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: link })
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      status.textContent = result.detail || "Die Analyse ist fehlgeschlagen.";
-      return;
-    }
-
-    status.textContent =
-  "Analyse abgeschlossen. Erkannte Einträge: " + result.count +
-  "\n" + JSON.stringify(result.players, null, 2);
-  } catch (error) {
-    status.textContent = "Verbindung zum Server fehlgeschlagen.";
-  }
+  document.getElementById("results").append(table);
+ }catch(e){status.textContent="Verbindung zum Server fehlgeschlagen.";}
 });
-</script>
-</body>
-</html>
+csvButton.addEventListener("click",async()=>{
+ if(!lastResult)return;
+ try{
+  const response=await fetch("/api/csv",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(lastResult)});
+  if(!response.ok){status.textContent="CSV konnte nicht erstellt werden.";return;}
+  const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=url;a.download="badminton_liga_scan.csv";a.click();URL.revokeObjectURL(url);
+ }catch(e){status.textContent="CSV-Download fehlgeschlagen.";}
+});
+</script></body></html>

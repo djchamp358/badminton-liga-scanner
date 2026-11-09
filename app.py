@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "Static"
-app = FastAPI(title="Badminton Liga-Scanner", version="2.1.0")
+app = FastAPI(title="Badminton Liga-Scanner", version="2.2.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 ALLOWED_HOSTS = {"dbv.turnier.de", "turnier.de"}
@@ -37,8 +37,13 @@ _last_fetch = 0.0
 
 class AnalyzeRequest(BaseModel):
     url: str
+    competition_url: str
     seasons: int = Field(default=5, ge=1, le=15)
     delay_ms: int = Field(default=250, ge=0, le=2000)
+
+
+class CompetitionRequest(BaseModel):
+    url: str
 
 
 def settings() -> tuple[str, str]:
@@ -231,8 +236,8 @@ async def fetch(url: str) -> str:
                 await browser.close()
 
 
-def competition_urls(content: str, base: str) -> list[tuple[str, str]]:
-    """Liest die echten Konkurrenz-Unterseiten aus events.aspx aus."""
+def competition_urls(content: str, base: str) -> list[dict[str, str]]:
+    """Liest Konkurrenznamen und deren Unterseiten-URLs aus der Turnierübersicht."""
     soup = BeautifulSoup(content, "lxml")
     found, seen = [], set()
     for a in soup.find_all("a", href=True):
@@ -244,10 +249,11 @@ def competition_urls(content: str, base: str) -> list[tuple[str, str]]:
         if "event" not in params or "id" not in params:
             continue
         name = clean(a.get_text(" "))
+        event_id = params["event"][0]
         if not name or href in seen:
             continue
         seen.add(href)
-        found.append((name, href))
+        found.append({"name": name, "url": href, "event_id": event_id})
     return found[:MAX_COMPETITIONS]
 
 
@@ -272,11 +278,8 @@ def player_links(content: str, base: str) -> list[dict[str, str]]:
             continue
         if name.lower() in {"spieler", "player", "favorit", "log in"}:
             continue
-        # Turnierseiten enthalten dieselben Spieler mehrfach (Starterliste/Spielplan).
-        # URL-Parameter player bzw. letzte Pfad-ID dienen als stabile Identität.
-        identity = (parse_qs(parsed.query).get("player", [""])[0]
-                    or re.search(r"/player/([^/]+)", path).group(1)
-                    if re.search(r"/player/([^/]+)", path) else href)
+        match = re.search(r"/player/([^/]+)", path)
+        identity = parse_qs(parsed.query).get("player", [""])[0] or (match.group(1) if match else href)
         if identity in seen:
             continue
         seen.add(identity)
@@ -284,24 +287,11 @@ def player_links(content: str, base: str) -> list[dict[str, str]]:
     return candidates
 
 
-async def event_players(content: str, base: str) -> list[dict[str, str]]:
-    # Spieler zuerst direkt auf der Übersichtsseite suchen, danach Konkurrenzseiten.
-    players = player_links(content, base)
-    seen = {p["url"] for p in players}
-    competitions = competition_urls(content, base)
-    for competition_name, competition_url in competitions:
-        try:
-            subpage = await fetch(competition_url)
-        except HTTPException:
-            continue
-        for player in player_links(subpage, competition_url):
-            if player["url"] not in seen:
-                player["competition"] = competition_name
-                players.append(player)
-                seen.add(player["url"])
-            if len(players) >= MAX_PLAYERS:
-                return players[:MAX_PLAYERS]
-    return players[:MAX_PLAYERS]
+async def event_players(competition_url: str, competition_name: str) -> list[dict[str, str]]:
+    """Liest nur die ausgewählte Konkurrenz aus."""
+    content = await fetch(competition_url)
+    players = player_links(content, competition_url)
+    return [{**p, "competition": competition_name} for p in players[:MAX_PLAYERS]]
 
 
 def find_profile_url(content: str, base: str) -> str | None:
@@ -376,7 +366,7 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
 
 
 async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
-    key = f"player:{p['url']}:{seasons}"
+    key = f"player:{p['url']}:{seasons}:{p.get('competition', '')}"
     hit = await cache_get(key)
     if hit is not None:
         return hit
@@ -424,24 +414,42 @@ async def test_profile(request: Request):
     return {"hinweis": "Der DBV-Zugriff wird beim nächsten Scan geprüft. Ein separates Testabrufen würde unnötige Anfragen erzeugen."}
 
 
-@app.post("/api/analyze")
-async def analyze(req: AnalyzeRequest, request: Request):
+@app.post("/api/competitions")
+async def get_competitions(req: CompetitionRequest, request: Request):
     require_auth(request)
     if not allowed(req.url):
         raise HTTPException(400, "Bitte einen sicheren HTTPS-Link von dbv.turnier.de oder turnier.de verwenden.")
     html_content = await fetch(req.url)
-    players = await event_players(html_content, req.url)
+    competitions = competition_urls(html_content, req.url)
+    if not competitions:
+        raise HTTPException(422, "Auf dieser Seite wurden keine Konkurrenz-Unterseiten gefunden. Bitte den Link zur Turnierübersicht prüfen.")
+    return {"competitions": competitions}
+
+
+@app.post("/api/analyze")
+async def analyze(req: AnalyzeRequest, request: Request):
+    require_auth(request)
+    if not allowed(req.url) or not allowed(req.competition_url):
+        raise HTTPException(400, "Bitte sichere HTTPS-Links von dbv.turnier.de oder turnier.de verwenden.")
+    overview_html = await fetch(req.url)
+    competitions = competition_urls(overview_html, req.url)
+    selected = next((c for c in competitions if c["url"] == req.competition_url), None)
+    if selected is None:
+        raise HTTPException(400, "Die ausgewählte Konkurrenz gehört nicht zu dieser Turnierübersicht. Bitte Konkurrenzen erneut laden.")
+    players = await event_players(selected["url"], selected["name"])
     if not players:
-        competitions = competition_urls(html_content, req.url)
-        raise HTTPException(422, f"Keine Spielerlinks erkannt. {len(competitions)} Konkurrenz-Unterseiten gefunden. Bitte prüfen, ob das Turnier Meldungen/Spieler enthält.")
+        raise HTTPException(422, f"Keine Spielerlinks in {selected['name']} erkannt. Bitte prüfen, ob die Konkurrenz Meldungen enthält und wie die Teilnehmerseite aufgebaut ist.")
     rows = []
     for i, player in enumerate(players):
         if i and req.delay_ms:
             await asyncio.sleep(req.delay_ms / 1000)
         rows.append(await analyze_player(player, req.seasons, req.delay_ms))
-    for i, row in enumerate(rows):
-        row["pair_no"] = i // 2 + 1
-    return {"source_url": req.url, "count": len(rows), "players": rows}
+    return {
+        "source_url": req.url,
+        "competition": selected["name"],
+        "count": len(rows),
+        "players": rows
+    }
 
 
 @app.post("/api/csv")
@@ -449,14 +457,21 @@ async def make_csv(payload: dict, request: Request):
     require_auth(request)
     players = payload.get("players") or []
     buf = io.StringIO()
-    writer = csv.writer(buf, delimiter=";", lineterminator="\\n")
-    writer.writerow(["Paar", "Spieler", "Aktuelle Liga", "Verein", "Liga-Historie", "DBV-Profil", "Status"])
+    writer = csv.writer(buf, delimiter=";", lineterminator="\n")
+    writer.writerow(["Konkurrenz", "Spieler", "Aktuelle Liga", "Verein", "Liga-Historie", "DBV-Profil", "Status"])
     for player in players:
         leagues = player.get("leagues") or []
         current = leagues[0] if leagues else {}
         history = " | ".join(f"{x.get('season','')}: {x.get('league','')} ({x.get('team','')})" for x in leagues)
-        writer.writerow([player.get("pair_no", ""), player.get("name", ""), current.get("league", ""),
-                         current.get("team", ""), history, player.get("profile_url", ""), player.get("status", "")])
+        writer.writerow([
+            player.get("competition", ""),
+            player.get("name", ""),
+            current.get("league", ""),
+            current.get("team", ""),
+            history,
+            player.get("profile_url", ""),
+            player.get("status", "")
+        ])
     data = buf.getvalue().encode("utf-8-sig")
     return StreamingResponse(io.BytesIO(data), media_type="text/csv; charset=utf-8",
                              headers={"Content-Disposition": "attachment; filename=badminton_liga_scan.csv"})

@@ -390,37 +390,80 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
     return unique
 
 
+
 async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
-    key = f"player-v2:{p['url']}:{seasons}:{p.get('competition', '')}"
+    key = f"player-v3:{p['url']}:{seasons}:{p.get('competition', '')}"
+
     hit = await cache_get(key)
     if hit is not None:
         return hit
+
     try:
         content = await fetch(p["url"])
         profile = find_profile_url(content, p["url"])
+
         if not profile:
-            result = {**p, "profile_url": None, "leagues": [], "status": "Kein DBV-Profil-Link gefunden"}
+            result = {
+                **p,
+                "profile_url": None,
+                "leagues": [],
+                "status": "Kein DBV-Profil-Link gefunden"
+            }
             await cache_put(key, result)
             return result
+
+        # Liga-Übersichtsseite öffnen
         index_url = profile.rstrip("/") + "/leagues"
         index_html = await fetch(index_url)
+
+        # Saison-Links auslesen
         pages = league_pages(index_html, index_url)
         leagues = []
-        for _, page_url in pages[:seasons]:
+
+        for year, page_url in pages[:seasons]:
             if delay_ms:
                 await asyncio.sleep(delay_ms / 1000)
+
             page_html = await fetch(page_url)
-            leagues.extend(parse_league_season(page_html, page_url.rstrip("/").split("/")[-1], page_url))
-        result = {**p, "profile_url": profile, "leagues": leagues,
-                  "status": "OK" if leagues else "Keine Liga gefunden"}
+
+            # Saisonjahr ausdrücklich übergeben
+            season_data = parse_league_season(
+                page_html,
+                year,
+                page_url
+            )
+
+            leagues.extend(season_data)
+
+        result = {
+            **p,
+            "profile_url": profile,
+            "leagues": leagues,
+            "status": "OK" if leagues else "Keine Liga gefunden"
+        }
+
         await cache_put(key, result)
         return result
+
     except HTTPException as exc:
         if exc.status_code == 502:
             raise
-        return {**p, "profile_url": None, "leagues": [], "status": f"Fehler: {exc.detail}"}
+
+        return {
+            **p,
+            "profile_url": None,
+            "leagues": [],
+            "status": f"Fehler: {exc.detail}"
+        }
+
     except Exception as exc:
-        return {**p, "profile_url": None, "leagues": [], "status": f"Fehler: {str(exc)[:120]}"}
+        return {
+            **p,
+            "profile_url": None,
+            "leagues": [],
+            "status": f"Fehler: {str(exc)[:120]}"
+        }
+
 
 
 @app.get("/api/cache-info")

@@ -188,10 +188,16 @@ async def cache_put(key: str, value: Any):
     await asyncio.to_thread(_cache_put, key, value)
 
 
+
 async def fetch(url: str) -> str:
     global _last_fetch
+
     if not allowed(url):
-        raise HTTPException(400, "Nur sichere HTTPS-Links von DBV/Turnier.de werden akzeptiert.")
+        raise HTTPException(
+            400,
+            "Nur sichere HTTPS-Links von DBV/Turnier.de werden akzeptiert."
+        )
+
     cached_html = await cache_get("html:" + url)
     if cached_html is not None:
         return cached_html
@@ -200,40 +206,116 @@ async def fetch(url: str) -> str:
         cached_html = await cache_get("html:" + url)
         if cached_html is not None:
             return cached_html
+
         wait = FETCH_INTERVAL_SECONDS - (time.monotonic() - _last_fetch)
         if wait > 0:
             await asyncio.sleep(wait)
+
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/ms-playwright"
         from playwright.async_api import async_playwright
+
         browser = None
+
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page(locale="de-DE", user_agent=UA, accept_downloads=False)
-                await page.goto(url, wait_until="commit", timeout=60000)
-                await page.wait_for_timeout(2500)
-                if "cookiewall" in page.url.lower():
+
+                page = await browser.new_page(
+                    locale="de-DE",
+                    user_agent=UA,
+                    accept_downloads=False
+                )
+
+                last_error = None
+
+                for attempt in range(2):
                     try:
-                        await page.get_by_role("button", name=re.compile("accept|akzeptieren|zustimmen", re.I)).click(timeout=8000)
-                        await page.wait_for_timeout(1500)
-                        await page.goto(url, wait_until="commit", timeout=60000)
-                        await page.wait_for_timeout(2500)
-                    except Exception:
-                        pass
-                final_url = page.url
-                content = await page.content()
-                if "cookiewall" in final_url.lower():
-                    raise HTTPException(502, "Turnier.de zeigt weiterhin die Cookie-Seite.")
-                await cache_put("html:" + url, content)
-                _last_fetch = time.monotonic()
-                return content
+                        print(
+                            f"DEBUG FETCH Versuch {attempt + 1}: {url}",
+                            flush=True
+                        )
+
+                        await page.goto(
+                            url,
+                            wait_until="domcontentloaded",
+                            timeout=90000
+                        )
+
+                        await page.wait_for_timeout(1000)
+
+                        if "cookiewall" in page.url.lower():
+                            try:
+                                await page.get_by_role(
+                                    "button",
+                                    name=re.compile(
+                                        "accept|akzeptieren|zustimmen",
+                                        re.I
+                                    )
+                                ).click(timeout=8000)
+
+                                await page.wait_for_timeout(1000)
+
+                                await page.goto(
+                                    url,
+                                    wait_until="domcontentloaded",
+                                    timeout=90000
+                                )
+                            except Exception:
+                                pass
+
+                        final_url = page.url
+                        content = await page.content()
+
+                        if "cookiewall" in final_url.lower():
+                            raise HTTPException(
+                                502,
+                                "Turnier.de zeigt weiterhin die Cookie-Seite."
+                            )
+
+                        await cache_put("html:" + url, content)
+                        _last_fetch = time.monotonic()
+
+                        print(
+                            f"DEBUG FETCH erfolgreich: {url}",
+                            flush=True
+                        )
+
+                        return content
+
+                    except HTTPException:
+                        raise
+
+                    except Exception as exc:
+                        last_error = exc
+                        print(
+                            f"DEBUG FETCH Fehler Versuch {attempt + 1}: "
+                            f"{type(exc).__name__}: {exc}",
+                            flush=True
+                        )
+
+                        if attempt == 0:
+                            await asyncio.sleep(3)
+
+                raise HTTPException(
+                    502,
+                    f"DBV-Seite nach 2 Versuchen nicht erreichbar: "
+                    f"{type(last_error).__name__}: {last_error}"
+                )
+
         except HTTPException:
             raise
+
         except Exception as exc:
-            raise HTTPException(502, f"Browser-Abruf fehlgeschlagen: {type(exc).__name__}: {exc}")
+            raise HTTPException(
+                502,
+                f"Browser-Abruf fehlgeschlagen: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
         finally:
             if browser:
                 await browser.close()
+
 
 
 def competition_urls(content: str, base: str) -> list[dict[str, str]]:

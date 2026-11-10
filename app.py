@@ -418,6 +418,9 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
 
         # Saison-Links auslesen
         pages = league_pages(index_html, index_url)
+        print("DEBUG PROFIL:", profile)
+        print("DEBUG LIGA-SEITE:", index_url)
+        print("DEBUG GEFUNDENE SAISONS:", pages)
         leagues = []
 
         for year, page_url in pages[:seasons]:
@@ -425,6 +428,8 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
                 await asyncio.sleep(delay_ms / 1000)
 
             page_html = await fetch(page_url)
+            print("DEBUG SAISON:", year, "URL:", page_url)
+            print("DEBUG LEAGUE-LINKS:", len(BeautifulSoup(page_html, "lxml").find_all("a", href=True)))
 
             # Saisonjahr ausdrücklich übergeben
             season_data = parse_league_season(

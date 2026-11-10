@@ -428,6 +428,14 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
                 await asyncio.sleep(delay_ms / 1000)
 
             page_html = await fetch(page_url)
+            print("DEBUG: Rufe Saisonseite auf:", page_url, flush=True)
+
+            try:
+                page_html = await fetch(page_url)
+                print("DEBUG: Saisonseite erfolgreich geladen:", year, flush=True)
+            except Exception as exc:
+                print("DEBUG: FEHLER beim Laden der Saison:", year, str(exc), flush=True)
+                raise
             print("DEBUG SAISON:", year, "URL:", page_url)
             print("DEBUG LEAGUE-LINKS:", len(BeautifulSoup(page_html, "lxml").find_all("a", href=True)))
 

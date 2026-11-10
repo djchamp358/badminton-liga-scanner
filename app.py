@@ -296,36 +296,59 @@ async def event_players(competition_url: str, competition_name: str) -> list[dic
 
 def find_profile_url(content: str, base: str) -> str | None:
     soup = BeautifulSoup(content, "lxml")
+
     for a in soup.find_all("a", href=True):
         href = urljoin(base, a["href"])
-        if "/player-profile/" in urlparse(href).path.lower():
+        parsed = urlparse(href)
+        path = parsed.path.lower().rstrip("/")
+
+        # Neues DBV-Profilformat:
+        # /player/{UUID}/{Spielerkennung}
+        if (
+            parsed.hostname in ALLOWED_HOSTS
+            and re.fullmatch(r"/player/[^/]+/[^/]+", path)
+        ):
             return href
+
     return None
 
 
 def league_pages(content: str, base: str) -> list[tuple[str, str]]:
     soup = BeautifulSoup(content, "lxml")
     out, seen = [], set()
+
     for a in soup.find_all("a", href=True):
         href = urljoin(base, a["href"])
-        path = urlparse(href).path.lower()
-        if not re.search(r"/player-profile/.+/leagues(?:/\d+)?$", path):
+        parsed = urlparse(href)
+        path = parsed.path.lower().rstrip("/")
+
+        if parsed.hostname not in ALLOWED_HOSTS:
             continue
-        match = re.search(r"/leagues/(\d+)$", path)
-        if not match or href in seen:
+
+        # Neues DBV-Format:
+        # /player/{UUID}/{Spielerkennung}/leagues/2017
+        match = re.fullmatch(
+            r"/player/[^/]+/[^/]+/leagues/(\d{4})",
+            path
+        )
+
+        if not match:
             continue
+
         year = match.group(1)
+
         if year not in {str(y) for y in range(2010, 2040)}:
             continue
-        seen.add(href)
-        out.append((year, href))
-    if not out:
-        for a in soup.find_all("a", href=True):
-            href = urljoin(base, a["href"])
-            if re.search(r"/player-profile/.+/leagues$", urlparse(href).path.lower()):
-                out.append(("current", href))
-                break
-    out.sort(key=lambda x: int(x[0]) if x[0].isdigit() else 9999, reverse=True)
+
+        if href not in seen:
+            seen.add(href)
+            out.append((year, href))
+
+    out.sort(
+        key=lambda x: int(x[0]),
+        reverse=True
+    )
+
     return out
 
 
@@ -366,7 +389,7 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
 
 
 async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
-    key = f"player:{p['url']}:{seasons}:{p.get('competition', '')}"
+    key = f"player-v2:{p['url']}:{seasons}:{p.get('competition', '')}"
     hit = await cache_get(key)
     if hit is not None:
         return hit

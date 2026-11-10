@@ -427,7 +427,6 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
             if delay_ms:
                 await asyncio.sleep(delay_ms / 1000)
 
-            page_html = await fetch(page_url)
             print("DEBUG: Rufe Saisonseite auf:", page_url, flush=True)
 
             try:

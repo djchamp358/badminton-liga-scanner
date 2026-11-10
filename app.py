@@ -313,6 +313,7 @@ def find_profile_url(content: str, base: str) -> str | None:
     return None
 
 
+
 def league_pages(content: str, base: str) -> list[tuple[str, str]]:
     soup = BeautifulSoup(content, "lxml")
     out, seen = [], set()
@@ -320,22 +321,26 @@ def league_pages(content: str, base: str) -> list[tuple[str, str]]:
     for a in soup.find_all("a", href=True):
         href = urljoin(base, a["href"])
         parsed = urlparse(href)
-        path = parsed.path.lower().rstrip("/")
 
         if parsed.hostname not in ALLOWED_HOSTS:
             continue
 
-        # Neues DBV-Format:
-        # /player/{UUID}/{Spielerkennung}/leagues/2017
-        match = re.fullmatch(
-            r"/player/[^/]+/[^/]+/leagues/(\d{4})",
-            path
-        )
+        # Jahreszahl aus dem URL-Parameter Year lesen
+        params = parse_qs(parsed.query)
+        year = params.get("Year", [None])[0]
 
-        if not match:
+        # Zusätzlich das ältere URL-Format unterstützen
+        if not year:
+            path = parsed.path.lower().rstrip("/")
+            match = re.fullmatch(
+                r"/player/[^/]+/[^/]+/leagues/(\d{4})",
+                path
+            )
+            if match:
+                year = match.group(1)
+
+        if not year or not re.fullmatch(r"\d{4}", year):
             continue
-
-        year = match.group(1)
 
         if year not in {str(y) for y in range(2010, 2040)}:
             continue
@@ -344,12 +349,9 @@ def league_pages(content: str, base: str) -> list[tuple[str, str]]:
             seen.add(href)
             out.append((year, href))
 
-    out.sort(
-        key=lambda x: int(x[0]),
-        reverse=True
-    )
-
+    out.sort(key=lambda x: int(x[0]), reverse=True)
     return out
+
 
 
 def parse_league_season(content: str, season_code: str, url: str) -> list[dict[str, str]]:

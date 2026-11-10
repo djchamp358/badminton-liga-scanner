@@ -8,6 +8,7 @@ import io
 import os
 import re
 import time
+import httpx
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse, parse_qs
@@ -296,10 +297,51 @@ async def fetch(url: str) -> str:
                         if attempt == 0:
                             await asyncio.sleep(3)
 
+                                print("DEBUG: Versuche jetzt direkten HTTPX-Abruf:", url, flush=True)
+
+                try:
+                    async with httpx.AsyncClient(
+                        follow_redirects=True,
+                        timeout=httpx.Timeout(30.0),
+                        headers={
+                            "User-Agent": UA,
+                            "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+                            "Accept": "text/html,application/xhtml+xml"
+                        }
+                    ) as client:
+                        response = await client.get(url)
+                        response.raise_for_status()
+
+                        if not allowed(str(response.url)):
+                            raise ValueError("Weiterleitung auf eine nicht erlaubte Adresse")
+
+                        content = response.text
+
+                        if "cookiewall" in str(response.url).lower():
+                            raise ValueError("DBV hat auf eine Cookie-Seite weitergeleitet")
+
+                        await cache_put("html:" + url, content)
+                        _last_fetch = time.monotonic()
+
+                        print(
+                            f"DEBUG HTTPX erfolgreich: Status {response.status_code}, "
+                            f"{len(content)} Zeichen",
+                            flush=True
+                        )
+
+                        return content
+
+                except Exception as exc:
+                    print(
+                        f"DEBUG HTTPX ebenfalls fehlgeschlagen: "
+                        f"{type(exc).__name__}: {exc}",
+                        flush=True
+                    )
+
                 raise HTTPException(
                     502,
-                    f"DBV-Seite nach 2 Versuchen nicht erreichbar: "
-                    f"{type(last_error).__name__}: {last_error}"
+                    f"Browser und HTTPX fehlgeschlagen. "
+                    f"Letzter Browser-Fehler: {type(last_error).__name__}: {last_error}"
                 )
 
         except HTTPException:

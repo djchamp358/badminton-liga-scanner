@@ -524,14 +524,16 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
 
 
 
+
 async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
-    key = f"player-v3:{p['url']}:{seasons}:{p.get('competition', '')}"
+    key = f"player-v4:{p['url']}:{seasons}:{p.get('competition', '')}"
 
     hit = await cache_get(key)
     if hit is not None:
         return hit
 
     try:
+        # Spielerprofil laden
         content = await fetch(p["url"])
         profile = find_profile_url(content, p["url"])
 
@@ -545,40 +547,41 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
             await cache_put(key, result)
             return result
 
-        # Liga-Übersichtsseite öffnen
+        # Liga-Übersichtsseite laden
         index_url = profile.rstrip("/") + "/leagues"
         index_html = await fetch(index_url)
 
-        # Saison-Links auslesen
+        # Vorhandene Saisonlinks ermitteln
         pages = league_pages(index_html, index_url)
-        print("DEBUG PROFIL:", profile)
-        print("DEBUG LIGA-SEITE:", index_url)
-        print("DEBUG GEFUNDENE SAISONS:", pages)
+
+        print("DEBUG PROFIL:", profile, flush=True)
+        print("DEBUG LIGA-SEITE:", index_url, flush=True)
+        print("DEBUG GEFUNDENE SAISONS:", pages, flush=True)
+
         leagues = []
 
-        for year, page_url in pages[:seasons]:
-            if delay_ms:
-                await asyncio.sleep(delay_ms / 1000)
+        if pages:
+            # Die Liga-Übersichtsseite enthält bereits
+            # die aktuell ausgewählte Saison.
+            selected_year = pages[0][0]
 
-            print("DEBUG: Rufe Saisonseite auf:", page_url, flush=True)
-
-            try:
-                page_html = await fetch(page_url)
-                print("DEBUG: Saisonseite erfolgreich geladen:", year, flush=True)
-            except Exception as exc:
-                print("DEBUG: FEHLER beim Laden der Saison:", year, str(exc), flush=True)
-                raise
-            print("DEBUG SAISON:", year, "URL:", page_url)
-            print("DEBUG LEAGUE-LINKS:", len(BeautifulSoup(page_html, "lxml").find_all("a", href=True)))
-
-            # Saisonjahr ausdrücklich übergeben
-            season_data = parse_league_season(
-                page_html,
-                year,
-                page_url
+            print(
+                "DEBUG: Lese Liga-Daten direkt aus der Übersichtsseite:",
+                selected_year,
+                flush=True
             )
 
-            leagues.extend(season_data)
+            leagues = parse_league_season(
+                index_html,
+                selected_year,
+                index_url
+            )
+
+            print(
+                "DEBUG: Gefundene Liga-Einträge:",
+                len(leagues),
+                flush=True
+            )
 
         result = {
             **p,
@@ -608,6 +611,7 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
             "leagues": [],
             "status": f"Fehler: {str(exc)[:120]}"
         }
+
 
 
 

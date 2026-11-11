@@ -297,7 +297,11 @@ async def fetch(url: str) -> str:
                         if attempt == 0:
                             await asyncio.sleep(3)
 
-                                print("DEBUG: Versuche jetzt direkten HTTPX-Abruf:", url, flush=True)
+                print(
+                    "DEBUG: Versuche jetzt direkten HTTPX-Abruf:",
+                    url,
+                    flush=True
+                )
 
                 try:
                     async with httpx.AsyncClient(
@@ -313,19 +317,23 @@ async def fetch(url: str) -> str:
                         response.raise_for_status()
 
                         if not allowed(str(response.url)):
-                            raise ValueError("Weiterleitung auf eine nicht erlaubte Adresse")
+                            raise ValueError(
+                                "Weiterleitung auf eine nicht erlaubte Adresse"
+                            )
 
                         content = response.text
 
                         if "cookiewall" in str(response.url).lower():
-                            raise ValueError("DBV hat auf eine Cookie-Seite weitergeleitet")
+                            raise ValueError(
+                                "DBV hat auf eine Cookie-Seite weitergeleitet"
+                            )
 
                         await cache_put("html:" + url, content)
                         _last_fetch = time.monotonic()
 
                         print(
-                            f"DEBUG HTTPX erfolgreich: Status {response.status_code}, "
-                            f"{len(content)} Zeichen",
+                            f"DEBUG HTTPX erfolgreich: Status "
+                            f"{response.status_code}, {len(content)} Zeichen",
                             flush=True
                         )
 
@@ -341,7 +349,8 @@ async def fetch(url: str) -> str:
                 raise HTTPException(
                     502,
                     f"Browser und HTTPX fehlgeschlagen. "
-                    f"Letzter Browser-Fehler: {type(last_error).__name__}: {last_error}"
+                    f"Letzter Browser-Fehler: "
+                    f"{type(last_error).__name__}: {last_error}"
                 )
 
         except HTTPException:

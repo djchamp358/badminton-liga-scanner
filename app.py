@@ -547,9 +547,22 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
     try:
         # Spielerprofil laden
         content = await fetch(p["url"])
-        profile = find_profile_url(content, p["url"])
+
+        # Manche Teilnehmerlinks führen bereits direkt zum DBV-Spielerprofil.
+        # In diesem Fall nicht nochmals auf der Profilseite nach einem Profil-Link suchen.
+        player_url = urlparse(p["url"])
+        player_path = player_url.path.lower().rstrip("/")
+        is_direct_profile = (
+            player_url.hostname in ALLOWED_HOSTS
+            and (
+                re.fullmatch(r"/player-profile/[^/]+", player_path)
+                or re.fullmatch(r"/player/[^/]+/[^/]+", player_path)
+            )
+        )
+        profile = p["url"] if is_direct_profile else find_profile_url(content, p["url"])
 
         if not profile:
+            print("DEBUG KEIN PROFILLINK:", p.get("name", p["url"]), "| Teilnehmerseite:", p["url"], flush=True)
             result = {
                 **p,
                 "profile_url": None,

@@ -526,7 +526,7 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
 
 
 async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
-    key = f"player-v4:{p['url']}:{seasons}:{p.get('competition', '')}"
+    key = f"player-v5:{p['url']}:{seasons}:{p.get('competition', '')}"
 
     hit = await cache_get(key)
     if hit is not None:

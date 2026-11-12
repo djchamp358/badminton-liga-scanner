@@ -429,30 +429,36 @@ async def event_players(competition_url: str, competition_name: str) -> list[dic
 
 def find_profile_url(content: str, base: str) -> str | None:
     soup = BeautifulSoup(content, "lxml")
+    new_profiles, old_profiles = [], []
 
     for a in soup.find_all("a", href=True):
         href = urljoin(base, a["href"])
         parsed = urlparse(href)
         path = parsed.path.lower().rstrip("/")
 
-        # DBV-Profilformate:
-        # Alt: /player/{UUID}/{Spielerkennung}
-        # Neu: /player-profile/{UUID}
-        if parsed.hostname in ALLOWED_HOSTS and (
-            re.fullmatch(r"/player/[^/]+/[^/]+", path)
-            or re.fullmatch(r"/player-profile/[^/]+", path)
-        ):
-            # Tracking- und sonstige Query-Parameter entfernen
-            return urlunparse((
-                parsed.scheme,
-                parsed.netloc,
-                parsed.path.rstrip("/"),
-                "",
-                "",
-                ""
-            ))
+        if parsed.hostname not in ALLOWED_HOSTS:
+            continue
 
-    return None
+        # Neue DBV-Spielerprofile haben Vorrang vor alten Spieler-/Ergebnislinks.
+        if re.fullmatch(r"/player-profile/[^/]+", path):
+            new_profiles.append(href)
+        elif re.fullmatch(r"/player/[^/]+/[^/]+", path):
+            old_profiles.append(href)
+
+    # Wenn vorhanden, immer das neue Profilformat verwenden.
+    candidates = new_profiles or old_profiles
+    if not candidates:
+        return None
+
+    parsed = urlparse(candidates[0])
+    return urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        parsed.path.rstrip("/"),
+        "",
+        "",
+        ""
+    ))
 
 
 
@@ -535,7 +541,7 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
 
 
 async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
-    key = f"player-v6:{p['url']}:{seasons}:{p.get('competition', '')}"
+    key = f"player-v7:{p['url']}:{seasons}:{p.get('competition', '')}"
 
     hit = await cache_get(key)
     if hit is not None:
@@ -552,14 +558,12 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
         # In diesem Fall nicht nochmals auf der Profilseite nach einem Profil-Link suchen.
         player_url = urlparse(p["url"])
         player_path = player_url.path.lower().rstrip("/")
-        is_direct_profile = (
+        # Nur das neue /player-profile/-Format gilt als direktes Liga-Spielerprofil.
+        is_new_direct_profile = (
             player_url.hostname in ALLOWED_HOSTS
-            and (
-                re.fullmatch(r"/player-profile/[^/]+", player_path)
-                or re.fullmatch(r"/player/[^/]+/[^/]+", player_path)
-            )
+            and re.fullmatch(r"/player-profile/[^/]+", player_path)
         )
-        profile = p["url"] if is_direct_profile else find_profile_url(content, p["url"])
+        profile = p["url"] if is_new_direct_profile else find_profile_url(content, p["url"])
 
         if not profile:
             print("DEBUG KEIN PROFILLINK:", p.get("name", p["url"]), "| Teilnehmerseite:", p["url"], flush=True)
@@ -568,6 +572,19 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
                 "profile_url": None,
                 "leagues": [],
                 "status": "Kein DBV-Profil-Link gefunden"
+            }
+            await cache_put(key, result)
+            return result
+
+        # Laut manueller Prüfung liegen Liga-Einsätze im neuen Profilformat.
+        # Alte /player/-Profile nicht als Liga werten: dort können Turnier-
+        # und Match-Verknüpfungen vorkommen, die keine Liga-Einsätze belegen.
+        if not re.fullmatch(r"/player-profile/[^/]+", urlparse(profile).path.lower().rstrip("/")):
+            result = {
+                **p,
+                "profile_url": profile,
+                "leagues": [],
+                "status": "Kein Liga-Profil (altes DBV-Format)"
             }
             await cache_put(key, result)
             return result

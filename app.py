@@ -541,7 +541,7 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
 
 
 async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
-    key = f"player-v7:{p['url']}:{seasons}:{p.get('competition', '')}"
+    key = f"player-v8:{p['url']}:{seasons}:{p.get('competition', '')}"
 
     hit = await cache_get(key)
     if hit is not None:
@@ -576,19 +576,8 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
             await cache_put(key, result)
             return result
 
-        # Laut manueller Prüfung liegen Liga-Einsätze im neuen Profilformat.
-        # Alte /player/-Profile nicht als Liga werten: dort können Turnier-
-        # und Match-Verknüpfungen vorkommen, die keine Liga-Einsätze belegen.
-        if not re.fullmatch(r"/player-profile/[^/]+", urlparse(profile).path.lower().rstrip("/")):
-            result = {
-                **p,
-                "profile_url": profile,
-                "leagues": [],
-                "status": "Kein Liga-Profil (altes DBV-Format)"
-            }
-            await cache_put(key, result)
-            return result
-
+        # Beide DBV-Profilformate unterstützen. Alte Profile besitzen ebenfalls
+        # eine Liga-Übersicht; deren Treffer werden zunächst diagnostisch geprüft.
         # Liga-Übersichtsseite laden
         index_url = profile.rstrip("/") + "/leagues"
         index_html = await fetch(index_url)
@@ -619,6 +608,11 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
                 index_url
             )
 
+            print(
+                "DEBUG: Liga-Kandidaten (Saison, Bezeichnung, Team, URL):",
+                [(x["season"], x["league"], x["team"], x["url"]) for x in leagues],
+                flush=True
+            )
             print(
                 "DEBUG: Gefundene Liga-Einträge:",
                 len(leagues),

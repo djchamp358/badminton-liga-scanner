@@ -11,7 +11,7 @@ import time
 import httpx
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse, parse_qs
+from urllib.parse import urljoin, urlparse, urlunparse, parse_qs
 
 import psycopg
 from bs4 import BeautifulSoup

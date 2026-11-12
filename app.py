@@ -239,7 +239,7 @@ async def fetch(url: str) -> str:
                         await page.goto(
                             url,
                             wait_until="domcontentloaded",
-                            timeout=90000
+                            timeout=20000
                         )
 
                         await page.wait_for_timeout(1000)
@@ -259,7 +259,7 @@ async def fetch(url: str) -> str:
                                 await page.goto(
                                     url,
                                     wait_until="domcontentloaded",
-                                    timeout=90000
+                                    timeout=20000
                                 )
                             except Exception:
                                 pass
@@ -306,7 +306,7 @@ async def fetch(url: str) -> str:
                 try:
                     async with httpx.AsyncClient(
                         follow_redirects=True,
-                        timeout=httpx.Timeout(30.0),
+                        timeout=httpx.Timeout(8.0, connect=4.0),
                         headers={
                             "User-Agent": UA,
                             "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
@@ -642,7 +642,14 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
 
     except HTTPException as exc:
         if exc.status_code == 502:
-            raise
+            # DBV-Verbindungsfehler als Spielerstatus zurückgeben, nicht den
+            # gesamten Analyse-Endpunkt mit einem langen Fehler abbrechen.
+            return {
+                **p,
+                "profile_url": None,
+                "leagues": [],
+                "status": f"DBV-Verbindung fehlgeschlagen: {exc.detail}"
+            }
 
         return {
             **p,
@@ -704,15 +711,26 @@ async def analyze(req: AnalyzeRequest, request: Request):
     if not players:
         raise HTTPException(422, f"Keine Spielerlinks in {selected['name']} erkannt. Bitte prüfen, ob die Konkurrenz Meldungen enthält und wie die Teilnehmerseite aufgebaut ist.")
     rows = []
+    warning = None
     for i, player in enumerate(players):
         if i and req.delay_ms:
             await asyncio.sleep(req.delay_ms / 1000)
-        rows.append(await analyze_player(player, req.seasons, req.delay_ms))
+        row = await analyze_player(player, req.seasons, req.delay_ms)
+        rows.append(row)
+
+        # Wenn DBV aus der Cloud nicht erreichbar ist, nicht 30 Spieler
+        # nacheinander in Timeouts laufen lassen. Teilergebnis zurückgeben.
+        if row.get("status", "").startswith("DBV-Verbindung fehlgeschlagen:"):
+            warning = row["status"]
+            break
+
     return {
         "source_url": req.url,
         "competition": selected["name"],
         "count": len(rows),
-        "players": rows
+        "players": rows,
+        "warning": warning,
+        "partial": warning is not None
     }
 
 

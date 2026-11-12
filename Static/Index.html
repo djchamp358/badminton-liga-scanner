@@ -147,7 +147,9 @@ scanButton.addEventListener("click", async () => {
 
     lastResult = result;
     csvButton.disabled = false;
-    status.textContent = "Analyse von " + result.competition + " abgeschlossen. Erkannte Einträge: " + result.count;
+    status.textContent = result.warning
+      ? "Analyse vorzeitig beendet. Teilergebnis für " + result.count + " Spieler. Ursache: " + result.warning
+      : "Analyse von " + result.competition + " abgeschlossen. Erkannte Einträge: " + result.count;
 
     const table = document.createElement("table");
     const thead = document.createElement("thead");

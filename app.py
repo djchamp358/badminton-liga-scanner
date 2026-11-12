@@ -8,6 +8,8 @@ import io
 import os
 import re
 import time
+import socket
+import ssl
 import httpx
 from pathlib import Path
 from typing import Any
@@ -190,6 +192,46 @@ async def cache_put(key: str, value: Any):
 
 
 
+async def diagnose_https_host(host: str) -> str:
+    """Diagnostiziert DNS sowie TCP/TLS-Erreichbarkeit ohne den Scan zu gefährden."""
+    try:
+        infos = await asyncio.wait_for(
+            asyncio.to_thread(socket.getaddrinfo, host, 443, type=socket.SOCK_STREAM),
+            timeout=5
+        )
+        ips = sorted({item[4][0] for item in infos})
+    except Exception as exc:
+        return f"DNS FEHLER: {type(exc).__name__}: {exc}"
+
+    if not ips:
+        return "DNS erfolgreich, aber keine IP-Adresse gefunden"
+
+    attempts = []
+    for ip in ips[:4]:
+        writer = None
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    ip, 443,
+                    ssl=ssl.create_default_context(),
+                    server_hostname=host
+                ),
+                timeout=5
+            )
+            attempts.append(f"{ip}: TCP/TLS erreichbar")
+        except Exception as exc:
+            attempts.append(f"{ip}: {type(exc).__name__}: {exc}")
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+    return f"DNS-IPs: {', '.join(ips)}; TCP/TLS: {'; '.join(attempts)}"
+
+
 async def fetch(url: str) -> str:
     global _last_fetch
 
@@ -303,6 +345,7 @@ async def fetch(url: str) -> str:
                     flush=True
                 )
 
+                httpx_error = 'HTTPX wurde nicht ausgeführt'
                 try:
                     async with httpx.AsyncClient(
                         follow_redirects=True,
@@ -340,17 +383,26 @@ async def fetch(url: str) -> str:
                         return content
 
                 except Exception as exc:
+                    httpx_error = f"{type(exc).__name__}: {exc}"
                     print(
                         f"DEBUG HTTPX ebenfalls fehlgeschlagen: "
                         f"{type(exc).__name__}: {exc}",
                         flush=True
                     )
 
+                diagnostic = ""
+                host = urlparse(url).hostname or ""
+                if host == "dbv.turnier.de":
+                    diagnostic = await diagnose_https_host(host)
+                    print(f"DEBUG DBV NETZWERKDIAGNOSE: {diagnostic}", flush=True)
+
                 raise HTTPException(
                     502,
                     f"Browser und HTTPX fehlgeschlagen. "
                     f"Letzter Browser-Fehler: "
-                    f"{type(last_error).__name__}: {last_error}"
+                    f"{type(last_error).__name__}: {last_error}. "
+                    f"HTTPX-Fehler: {httpx_error}. "
+                    f"Netzwerkdiagnose: {diagnostic or 'nicht ausgeführt'}"
                 )
 
         except HTTPException:

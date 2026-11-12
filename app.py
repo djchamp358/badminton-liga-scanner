@@ -503,18 +503,30 @@ def league_pages(content: str, base: str) -> list[tuple[str, str]]:
 
 
 def parse_league_season(content: str, season_code: str, url: str) -> list[dict[str, str]]:
+    """Liest echte Liga-Staffeln, keine Team-/Spieler- oder Turnier-Unterseiten."""
     soup = BeautifulSoup(content, "lxml")
     result = []
     for a in soup.find_all("a", href=True):
         href = urljoin(url, a["href"])
-        if "/league/" not in urlparse(href).path.lower():
+        path = urlparse(href).path.lower().rstrip("/")
+
+        # Nur Staffel-/Draw-Seiten sind eigenständige Liga-Einträge.
+        if not re.search(r"/league/[^/]+/draw/[^/]+$", path):
             continue
+
         text = clean(a.get_text(" "))
         if not text:
             continue
         league = text.split(")", 1)[1].strip() if ")" in text else text
         if "–" in league and league.count("–") >= 2:
             league = league.split("–")[-1].strip() or league
+
+        # Turniergruppen, Platzierungsrunden und Spieler-Matchseiten ausschließen.
+        if re.search(r"\b(gruppe|platz|matches|match|turnier|pokal|cup|open|masters)\b", league, re.I):
+            continue
+        if not re.search(r"\b(liga|klasse|staffel)\b", league, re.I):
+            continue
+
         team, node = "", a
         for _ in range(5):
             node = node.parent
@@ -527,11 +539,13 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
                     break
             if team:
                 break
+
         season = f"{int(season_code)-1}/{str(int(season_code))[-2:]}" if season_code.isdigit() else "aktuell"
         result.append({"season": season, "league": league, "team": team, "url": href})
+
     unique, keys = [], set()
     for item in result:
-        key = (item["season"], item["league"], item["team"])
+        key = (item["season"], item["league"], item["team"], item["url"])
         if key not in keys:
             keys.add(key)
             unique.append(item)
@@ -540,8 +554,9 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
 
 
 
+
 async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
-    key = f"player-v8:{p['url']}:{seasons}:{p.get('competition', '')}"
+    key = f"player-v9:{p['url']}:{seasons}:{p.get('competition', '')}"
 
     hit = await cache_get(key)
     if hit is not None:
@@ -592,32 +607,28 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
         leagues = []
 
         if pages:
-            # Die Liga-Übersichtsseite enthält bereits
-            # die aktuell ausgewählte Saison.
-            selected_year = pages[0][0]
+            # Alle in der Profilübersicht angebotenen Saisons prüfen.
+            # Die erste Saison liegt bereits als index_html vor.
+            for season_year, season_url in pages[:seasons]:
+                print("DEBUG: Lese Liga-Saison:", season_year, season_url, flush=True)
+                season_html = index_html if season_url.rstrip("/") == index_url.rstrip("/") else await fetch(season_url)
+                season_leagues = parse_league_season(season_html, season_year, season_url)
+                leagues.extend(season_leagues)
 
-            print(
-                "DEBUG: Lese Liga-Daten direkt aus der Übersichtsseite:",
-                selected_year,
-                flush=True
-            )
-
-            leagues = parse_league_season(
-                index_html,
-                selected_year,
-                index_url
-            )
+            unique, seen = [], set()
+            for item in leagues:
+                marker = (item["season"], item["league"], item["team"], item["url"])
+                if marker not in seen:
+                    seen.add(marker)
+                    unique.append(item)
+            leagues = unique
 
             print(
                 "DEBUG: Liga-Kandidaten (Saison, Bezeichnung, Team, URL):",
                 [(x["season"], x["league"], x["team"], x["url"]) for x in leagues],
                 flush=True
             )
-            print(
-                "DEBUG: Gefundene Liga-Einträge:",
-                len(leagues),
-                flush=True
-            )
+            print("DEBUG: Gefundene Liga-Einträge:", len(leagues), flush=True)
 
         result = {
             **p,

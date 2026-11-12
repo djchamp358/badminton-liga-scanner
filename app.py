@@ -435,13 +435,22 @@ def find_profile_url(content: str, base: str) -> str | None:
         parsed = urlparse(href)
         path = parsed.path.lower().rstrip("/")
 
-        # Neues DBV-Profilformat:
-        # /player/{UUID}/{Spielerkennung}
-        if (
-            parsed.hostname in ALLOWED_HOSTS
-            and re.fullmatch(r"/player/[^/]+/[^/]+", path)
+        # DBV-Profilformate:
+        # Alt: /player/{UUID}/{Spielerkennung}
+        # Neu: /player-profile/{UUID}
+        if parsed.hostname in ALLOWED_HOSTS and (
+            re.fullmatch(r"/player/[^/]+/[^/]+", path)
+            or re.fullmatch(r"/player-profile/[^/]+", path)
         ):
-            return href
+            # Tracking- und sonstige Query-Parameter entfernen
+            return urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path.rstrip("/"),
+                "",
+                "",
+                ""
+            ))
 
     return None
 

@@ -43,6 +43,7 @@ class AnalyzeRequest(BaseModel):
     competition_url: str
     seasons: int = Field(default=5, ge=1, le=15)
     delay_ms: int = Field(default=250, ge=0, le=2000)
+    force_refresh: bool = False
 
 
 class CompetitionRequest(BaseModel):
@@ -232,7 +233,7 @@ async def diagnose_https_host(host: str) -> str:
     return f"DNS-IPs: {', '.join(ips)}; TCP/TLS: {'; '.join(attempts)}"
 
 
-async def fetch(url: str) -> str:
+async def fetch(url: str, force_refresh: bool = False) -> str:
     global _last_fetch
 
     if not allowed(url):
@@ -241,14 +242,16 @@ async def fetch(url: str) -> str:
             "Nur sichere HTTPS-Links von DBV/Turnier.de werden akzeptiert."
         )
 
-    cached_html = await cache_get("html:" + url)
-    if cached_html is not None:
-        return cached_html
-
-    async with _fetch_lock:
+    if not force_refresh:
         cached_html = await cache_get("html:" + url)
         if cached_html is not None:
             return cached_html
+
+    async with _fetch_lock:
+        if not force_refresh:
+            cached_html = await cache_get("html:" + url)
+            if cached_html is not None:
+                return cached_html
 
         wait = FETCH_INTERVAL_SECONDS - (time.monotonic() - _last_fetch)
         if wait > 0:
@@ -472,9 +475,9 @@ def player_links(content: str, base: str) -> list[dict[str, str]]:
     return candidates
 
 
-async def event_players(competition_url: str, competition_name: str) -> list[dict[str, str]]:
+async def event_players(competition_url: str, competition_name: str, force_refresh: bool = False) -> list[dict[str, str]]:
     """Liest nur die ausgewählte Konkurrenz aus."""
-    content = await fetch(competition_url)
+    content = await fetch(competition_url, force_refresh=force_refresh)
     players = player_links(content, competition_url)
     return [{**p, "competition": competition_name} for p in players[:MAX_PLAYERS]]
 
@@ -629,10 +632,10 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
 
 
 
-async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
+async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int, force_refresh: bool = False):
     key = f"player-v12:{p['url']}:{seasons}:{p.get('competition', '')}"
 
-    hit = await cache_get(key)
+    hit = None if force_refresh else await cache_get(key)
     if hit is not None:
         print("DEBUG CACHE-TREFFER:", p.get("name", p.get("player", p["url"])), flush=True)
         return hit
@@ -641,7 +644,7 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
 
     try:
         # Spielerprofil laden
-        content = await fetch(p["url"])
+        content = await fetch(p["url"], force_refresh=force_refresh)
 
         # Manche Teilnehmerlinks führen bereits direkt zum DBV-Spielerprofil.
         # In diesem Fall nicht nochmals auf der Profilseite nach einem Profil-Link suchen.
@@ -669,7 +672,7 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
         # eine Liga-Übersicht; deren Treffer werden zunächst diagnostisch geprüft.
         # Liga-Übersichtsseite laden
         index_url = profile.rstrip("/") + "/leagues"
-        index_html = await fetch(index_url)
+        index_html = await fetch(index_url, force_refresh=force_refresh)
 
         # Vorhandene Saisonlinks ermitteln
         pages = league_pages(index_html, index_url)
@@ -685,7 +688,7 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
             # Die erste Saison liegt bereits als index_html vor.
             for season_year, season_url in pages[:seasons]:
                 print("DEBUG: Lese Liga-Saison:", season_year, season_url, flush=True)
-                season_html = index_html if season_url.rstrip("/") == index_url.rstrip("/") else await fetch(season_url)
+                season_html = index_html if season_url.rstrip("/") == index_url.rstrip("/") else await fetch(season_url, force_refresh=force_refresh)
                 season_leagues = parse_league_season(season_html, season_year, season_url)
                 leagues.extend(season_leagues)
 
@@ -786,12 +789,12 @@ async def analyze(req: AnalyzeRequest, request: Request):
     require_auth(request)
     if not allowed(req.url) or not allowed(req.competition_url):
         raise HTTPException(400, "Bitte sichere HTTPS-Links von dbv.turnier.de oder turnier.de verwenden.")
-    overview_html = await fetch(req.url)
+    overview_html = await fetch(req.url, force_refresh=req.force_refresh)
     competitions = competition_urls(overview_html, req.url)
     selected = next((c for c in competitions if c["url"] == req.competition_url), None)
     if selected is None:
         raise HTTPException(400, "Die ausgewählte Konkurrenz gehört nicht zu dieser Turnierübersicht. Bitte Konkurrenzen erneut laden.")
-    players = await event_players(selected["url"], selected["name"])
+    players = await event_players(selected["url"], selected["name"], force_refresh=req.force_refresh)
     if not players:
         raise HTTPException(422, f"Keine Spielerlinks in {selected['name']} erkannt. Bitte prüfen, ob die Konkurrenz Meldungen enthält und wie die Teilnehmerseite aufgebaut ist.")
     rows = []
@@ -799,7 +802,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
     for i, player in enumerate(players):
         if i and req.delay_ms:
             await asyncio.sleep(req.delay_ms / 1000)
-        row = await analyze_player(player, req.seasons, req.delay_ms)
+        row = await analyze_player(player, req.seasons, req.delay_ms, force_refresh=req.force_refresh)
         rows.append(row)
 
         # Wenn DBV aus der Cloud nicht erreichbar ist, nicht 30 Spieler

@@ -11,7 +11,7 @@ input,button,select{box-sizing:border-box;padding:12px;margin:8px 0;font-size:16
 input,select{width:100%;border:1px solid #bbb;background:white}
 button{background:#176b46;color:white;border:0;font-weight:bold;cursor:pointer}
 button:disabled{background:#8b9b92;cursor:not-allowed}
-#load,#scan{width:100%}
+#load,#scan,#rescan{width:100%}
 #status{white-space:pre-wrap;overflow-wrap:anywhere}
 table{width:100%;border-collapse:collapse;margin-top:18px;font-size:14px}
 th,td{text-align:left;padding:9px;border-bottom:1px solid #ddd;vertical-align:top}
@@ -40,6 +40,7 @@ th{background:#eef3f0}.toolbar{display:flex;gap:10px;flex-wrap:wrap}.toolbar but
 
 <div class="toolbar">
 <button id="scan" disabled>Ausgewählte Konkurrenz analysieren</button>
+<button id="rescan" disabled>Neu analysieren (Cache umgehen)</button>
 <button id="csv" disabled>CSV herunterladen</button>
 </div>
 
@@ -55,6 +56,7 @@ const linkInput = document.getElementById("turnierlink");
 const competitionSelect = document.getElementById("competition");
 const loadButton = document.getElementById("load");
 const scanButton = document.getElementById("scan");
+const rescanButton = document.getElementById("rescan");
 const csvButton = document.getElementById("csv");
 
 function validTurnierUrl(link) {
@@ -65,6 +67,7 @@ linkInput.addEventListener("input", () => {
   competitionSelect.innerHTML = '<option value="">Bitte Konkurrenzen erneut laden</option>';
   competitionSelect.disabled = true;
   scanButton.disabled = true;
+  rescanButton.disabled = true;
   csvButton.disabled = true;
   lastResult = null;
 });
@@ -109,6 +112,7 @@ loadButton.addEventListener("click", async () => {
     }
     competitionSelect.disabled = result.competitions.length === 0;
     scanButton.disabled = result.competitions.length === 0;
+    rescanButton.disabled = result.competitions.length === 0;
     status.textContent = result.competitions.length + " Konkurrenzen gefunden. Bitte eine auswählen.";
   } catch (e) {
     status.textContent = "Verbindung beim Laden der Konkurrenzen fehlgeschlagen.";
@@ -118,6 +122,14 @@ loadButton.addEventListener("click", async () => {
 });
 
 scanButton.addEventListener("click", async () => {
+  await runAnalysis(false);
+});
+
+rescanButton.addEventListener("click", async () => {
+  await runAnalysis(true);
+});
+
+async function runAnalysis(forceRefresh) {
   const link = linkInput.value.trim();
   const competitionUrl = competitionSelect.value;
   const competitionName = competitionSelect.options[competitionSelect.selectedIndex]?.textContent || "";
@@ -127,9 +139,12 @@ scanButton.addEventListener("click", async () => {
   }
 
   scanButton.disabled = true;
+  rescanButton.disabled = true;
   loadButton.disabled = true;
   csvButton.disabled = true;
-  status.textContent = "Analyse von " + competitionName + " läuft. Bitte warten ...";
+  status.textContent = forceRefresh
+    ? "Frische DBV-Daten für " + competitionName + " werden geladen. Der Cache wird umgangen; bitte warten ..."
+    : "Analyse von " + competitionName + " läuft. Bitte warten ...";
   document.getElementById("results").replaceChildren();
   lastResult = null;
 
@@ -137,7 +152,7 @@ scanButton.addEventListener("click", async () => {
     const response = await fetch("/api/analyze", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({url: link, competition_url: competitionUrl})
+      body: JSON.stringify({url: link, competition_url: competitionUrl, force_refresh: forceRefresh})
     });
     const result = await response.json();
     if (!response.ok) {
@@ -164,7 +179,7 @@ scanButton.addEventListener("click", async () => {
 
     function seasonText(entries) {
       return entries.length
-        ? entries.map(x => `${x.league}${x.team ? " – " + x.team : ""}`).join("\n")
+        ? entries.map(x => `${x.league}${x.team ? " – " + x.team : ""}`).join("\\n")
         : "Keine Liga gespielt";
     }
 
@@ -176,13 +191,7 @@ scanButton.addEventListener("click", async () => {
       );
       const previous = leagues.filter(x => x.season === previousSeasonShort);
 
-      const values = [
-        p.competition,
-        p.name,
-        seasonText(current),
-        seasonText(previous),
-        p.status
-      ];
+      const values = [p.competition, p.name, seasonText(current), seasonText(previous), p.status];
       for (const value of values) {
         const td = document.createElement("td");
         td.textContent = value;
@@ -196,9 +205,10 @@ scanButton.addEventListener("click", async () => {
     status.textContent = "Verbindung zum Server fehlgeschlagen.";
   } finally {
     scanButton.disabled = false;
+    rescanButton.disabled = false;
     loadButton.disabled = false;
   }
-});
+}
 
 csvButton.addEventListener("click", async () => {
   if (!lastResult) return;

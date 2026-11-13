@@ -191,7 +191,7 @@ async function runAnalysis(forceRefresh) {
     const table = document.createElement("table");
     const thead = document.createElement("thead");
     const tbody = document.createElement("tbody");
-    thead.innerHTML = `<tr><th>Konkurrenz</th><th>Spieler</th><th>Aktuelle Saison</th><th>Saison ${new Date().getFullYear() - (new Date().getMonth() < 6 ? 2 : 1)}/${new Date().getFullYear() - (new Date().getMonth() < 6 ? 1 : 0)}</th><th>Status</th></tr>`;
+    thead.innerHTML = `<tr><th>Konkurrenz</th><th>Spieler</th><th>Aktuelle Saison</th><th>Saison ${new Date().getFullYear() - (new Date().getMonth() < 6 ? 2 : 1)}/${new Date().getFullYear() - (new Date().getMonth() < 6 ? 1 : 0)}</th><th>Ältere Liga-Historie</th><th>Status</th></tr>`;
     table.append(thead, tbody);
 
     const now = new Date();
@@ -212,8 +212,36 @@ async function runAnalysis(forceRefresh) {
         x.season === "aktuell" || x.season === currentSeasonShort
       );
       const previous = leagues.filter(x => x.season === previousSeasonShort);
+      const older = leagues.filter(x =>
+        x.season && x.season !== "aktuell" &&
+        x.season !== currentSeasonShort &&
+        x.season !== previousSeasonShort
+      );
 
-      const values = [p.competition, p.name, seasonText(current), seasonText(previous), p.status];
+      function olderHistoryText(entries) {
+        const grouped = new Map();
+        for (const entry of entries) {
+          const season = entry.season || "Ältere Saison";
+          if (!grouped.has(season)) grouped.set(season, []);
+          grouped.get(season).push(entry);
+        }
+        return grouped.size
+          ? Array.from(grouped, ([season, seasonEntries]) =>
+              season + ": " + seasonEntries.map(x =>
+                `${x.league}${x.team ? " – " + x.team : ""}`
+              ).join("\\n")
+            ).join("\\n")
+          : "Keine Liga gespielt";
+      }
+
+      const values = [
+        p.competition,
+        p.name,
+        seasonText(current),
+        seasonText(previous),
+        olderHistoryText(older),
+        p.status
+      ];
       for (const value of values) {
         const td = document.createElement("td");
         td.textContent = value;

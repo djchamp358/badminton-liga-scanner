@@ -8,6 +8,7 @@ import io
 import os
 import re
 import time
+import uuid
 import socket
 import ssl
 import httpx
@@ -36,6 +37,7 @@ MAX_CACHE_ROWS = 1000
 FETCH_INTERVAL_SECONDS = 5
 _fetch_lock = asyncio.Lock()
 _last_fetch = 0.0
+_analysis_jobs: dict[str, dict[str, Any]] = {}
 
 
 class AnalyzeRequest(BaseModel):
@@ -784,9 +786,7 @@ async def get_competitions(req: CompetitionRequest, request: Request):
     return {"competitions": competitions}
 
 
-@app.post("/api/analyze")
-async def analyze(req: AnalyzeRequest, request: Request):
-    require_auth(request)
+async def _perform_analysis(req: AnalyzeRequest, job: dict[str, Any] | None = None):
     if not allowed(req.url) or not allowed(req.competition_url):
         raise HTTPException(400, "Bitte sichere HTTPS-Links von dbv.turnier.de oder turnier.de verwenden.")
     overview_html = await fetch(req.url, force_refresh=req.force_refresh)
@@ -799,14 +799,16 @@ async def analyze(req: AnalyzeRequest, request: Request):
         raise HTTPException(422, f"Keine Spielerlinks in {selected['name']} erkannt. Bitte prüfen, ob die Konkurrenz Meldungen enthält und wie die Teilnehmerseite aufgebaut ist.")
     rows = []
     warning = None
+    if job is not None:
+        job.update({"state": "running", "total": len(players), "competition": selected["name"]})
     for i, player in enumerate(players):
         if i and req.delay_ms:
             await asyncio.sleep(req.delay_ms / 1000)
         row = await analyze_player(player, req.seasons, req.delay_ms, force_refresh=req.force_refresh)
         rows.append(row)
-
-        # Wenn DBV aus der Cloud nicht erreichbar ist, nicht 30 Spieler
-        # nacheinander in Timeouts laufen lassen. Teilergebnis zurückgeben.
+        if job is not None:
+            job.update({"processed": len(rows), "players": list(rows)})
+        # Bei einem DBV-Verbindungsfehler Teilergebnis zurückgeben.
         if row.get("status", "").startswith("DBV-Verbindung fehlgeschlagen:"):
             warning = row["status"]
             break
@@ -818,6 +820,60 @@ async def analyze(req: AnalyzeRequest, request: Request):
         "players": rows,
         "warning": warning,
         "partial": warning is not None
+    }
+
+
+@app.post("/api/analyze")
+async def analyze(req: AnalyzeRequest, request: Request):
+    require_auth(request)
+    return await _perform_analysis(req)
+
+
+async def _run_analysis_job(job_id: str, req: AnalyzeRequest):
+    job = _analysis_jobs[job_id]
+    try:
+        result = await _perform_analysis(req, job)
+        job.update({"state": "completed", "result": result, "processed": result["count"],
+                    "players": result["players"], "warning": result.get("warning")})
+    except HTTPException as exc:
+        job.update({"state": "error", "error": exc.detail})
+    except Exception as exc:
+        job.update({"state": "error", "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+
+
+@app.post("/api/analyze/start")
+async def start_analysis(req: AnalyzeRequest, request: Request):
+    require_auth(request)
+    if not allowed(req.url) or not allowed(req.competition_url):
+        raise HTTPException(400, "Bitte sichere HTTPS-Links von dbv.turnier.de oder turnier.de verwenden.")
+    job_id = uuid.uuid4().hex
+    _analysis_jobs[job_id] = {
+        "state": "queued", "processed": 0, "total": 0, "players": [],
+        "created_at": time.time()
+    }
+    # Alte abgeschlossene Jobs begrenzen, damit der Prozessspeicher nicht wächst.
+    for old_id, old_job in list(_analysis_jobs.items()):
+        if old_id != job_id and time.time() - old_job.get("created_at", time.time()) > 3600:
+            _analysis_jobs.pop(old_id, None)
+    asyncio.create_task(_run_analysis_job(job_id, req))
+    return {"job_id": job_id}
+
+
+@app.get("/api/analyze/status/{job_id}")
+async def analysis_status(job_id: str, request: Request):
+    require_auth(request)
+    job = _analysis_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Analyseauftrag nicht gefunden. Bitte die Analyse erneut starten.")
+    return {
+        "state": job["state"],
+        "processed": job.get("processed", 0),
+        "total": job.get("total", 0),
+        "competition": job.get("competition", ""),
+        "players": job.get("players", []),
+        "warning": job.get("warning"),
+        "error": job.get("error"),
+        "result": job.get("result")
     }
 
 

@@ -150,15 +150,36 @@ async function runAnalysis(forceRefresh) {
   lastResult = null;
 
   try {
-    const response = await fetch("/api/analyze", {
+    const startResponse = await fetch("/api/analyze/start", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({url: link, competition_url: competitionUrl, force_refresh: forceRefresh})
     });
-    const result = await response.json();
-    if (!response.ok) {
-      status.textContent = result.detail || "Die Analyse ist fehlgeschlagen.";
+    const startData = await startResponse.json();
+    if (!startResponse.ok) {
+      status.textContent = startData.detail || "Die Analyse konnte nicht gestartet werden.";
       return;
+    }
+
+    let result = null;
+    while (!result) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const progressResponse = await fetch("/api/analyze/status/" + encodeURIComponent(startData.job_id));
+      const progress = await progressResponse.json();
+      if (!progressResponse.ok) {
+        throw new Error(progress.detail || "Der Analysefortschritt konnte nicht abgerufen werden.");
+      }
+      if (progress.state === "error") {
+        status.textContent = progress.error || "Die Analyse ist fehlgeschlagen.";
+        return;
+      }
+      if (progress.state === "completed") {
+        result = progress.result;
+      } else {
+        status.textContent = progress.total
+          ? "Analyse läuft: " + progress.processed + " von " + progress.total + " Spielern geprüft ..."
+          : "Analyse wird vorbereitet. Bitte warten ...";
+      }
     }
 
     lastResult = result;
@@ -203,7 +224,7 @@ async function runAnalysis(forceRefresh) {
     }
     document.getElementById("results").append(table);
   } catch (e) {
-    status.textContent = "Verbindung zum Server fehlgeschlagen.";
+    status.textContent = "Verbindung zum Server fehlgeschlagen: " + (e.message || "Bitte erneut versuchen.");
   } finally {
     scanButton.disabled = false;
     rescanButton.disabled = false;

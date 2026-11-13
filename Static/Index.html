@@ -85,6 +85,7 @@ loadButton.addEventListener("click", async () => {
 
   loadButton.disabled = true;
   scanButton.disabled = true;
+  rescanButton.disabled = true;
   csvButton.disabled = true;
   competitionSelect.disabled = true;
   status.textContent = "Konkurrenzen werden geladen. Bitte warten ...";
@@ -179,7 +180,7 @@ async function runAnalysis(forceRefresh) {
 
     function seasonText(entries) {
       return entries.length
-        ? entries.map(x => `${x.league}${x.team ? " – " + x.team : ""}`).join("\\n")
+        ? entries.map(x => `${x.league}${x.team ? " – " + x.team : ""}`).join("\n")
         : "Keine Liga gespielt";
     }
 

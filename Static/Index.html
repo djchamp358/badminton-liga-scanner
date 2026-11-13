@@ -229,8 +229,8 @@ async function runAnalysis(forceRefresh) {
           ? Array.from(grouped, ([season, seasonEntries]) =>
               season + ": " + seasonEntries.map(x =>
                 `${x.league}${x.team ? " – " + x.team : ""}`
-              ).join("\\n")
-            ).join("\\n")
+              ).join("\n")
+            ).join("\n")
           : "Keine Liga gespielt";
       }
 

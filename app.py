@@ -598,7 +598,7 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
         # Turniergruppen, Platzierungsrunden und Spieler-Matchseiten ausschließen.
         if re.search(r"\b(gruppe|platz|matches|match|turnier|pokal|cup|open|masters)\b", league, re.I):
             continue
-        if not re.search(r"\b(liga|klasse|staffel)\b", league, re.I):
+        if not re.search(r"(liga|klasse|staffel)", league, re.I):
             continue
 
         team, node = "", a
@@ -630,7 +630,7 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
 
 
 async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
-    key = f"player-v10:{p['url']}:{seasons}:{p.get('competition', '')}"
+    key = f"player-v11:{p['url']}:{seasons}:{p.get('competition', '')}"
 
     hit = await cache_get(key)
     if hit is not None:
@@ -703,6 +703,16 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
                 flush=True
             )
             print("DEBUG: Gefundene Liga-Einträge:", len(leagues), flush=True)
+        else:
+            # Bei neueren DBV-Profilen stehen die Liga-Draw-Links direkt
+            # auf /leagues; dort gibt es nicht zwingend Jahreslinks.
+            print("DEBUG: Keine Saisonlinks – prüfe Liga-Links direkt auf der Profilseite", flush=True)
+            leagues = parse_league_season(index_html, "aktuell", index_url)
+            print(
+                "DEBUG: Direkte Liga-Einträge:",
+                [(x["season"], x["league"], x["team"], x["url"]) for x in leagues],
+                flush=True
+            )
 
         result = {
             **p,

@@ -548,10 +548,17 @@ def league_pages(content: str, base: str) -> list[tuple[str, str]]:
         # Zusätzlich das ältere URL-Format unterstützen
         if not year:
             path = parsed.path.lower().rstrip("/")
+            # Neues DBV-Profilformat: /player-profile/{UUID}/leagues/{Jahr}
             match = re.fullmatch(
-                r"/player/[^/]+/[^/]+/leagues/(\d{4})",
+                r"/player-profile/[^/]+/leagues/(\d{4})",
                 path
             )
+            # Altes DBV-Profilformat weiterhin unterstützen.
+            if not match:
+                match = re.fullmatch(
+                    r"/player/[^/]+/[^/]+/leagues/(\d{4})",
+                    path
+                )
             if match:
                 year = match.group(1)
 
@@ -635,7 +642,7 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
 
 
 async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int, force_refresh: bool = False):
-    key = f"player-v12:{p['url']}:{seasons}:{p.get('competition', '')}"
+    key = f"player-v13:{p['url']}:{seasons}:{p.get('competition', '')}"
 
     hit = None if force_refresh else await cache_get(key)
     if hit is not None:

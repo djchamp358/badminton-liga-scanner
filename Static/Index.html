@@ -162,7 +162,7 @@ scanButton.addEventListener("click", async () => {
       const leagueCell = document.createElement("td");
       leagueCell.textContent = (p.leagues || []).map(x =>
         `${x.season}: ${x.league}${x.team ? " – " + x.team : ""}`
-      ).join("\n") || "Keine Liga-Daten";
+      ).join("\n") || (p.status === "Keine Liga gespielt" ? "Keine Liga gespielt" : "Keine Liga-Einträge gefunden");
       leagueCell.style.whiteSpace = "pre-wrap";
 
       for (const value of [p.competition, p.name, null, p.status]) {

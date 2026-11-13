@@ -518,6 +518,17 @@ def league_pages(content: str, base: str) -> list[tuple[str, str]]:
     soup = BeautifulSoup(content, "lxml")
     out, seen = [], set()
 
+    # Diagnose actual DBV markup: some profile variants may not expose Year
+    # directly in the season-navigation anchor URL.
+    relevant = []
+    for a in soup.find_all("a", href=True):
+        href = urljoin(base, a["href"])
+        path = urlparse(href).path.lower()
+        if "league" in path or "year=" in href.lower() or "season" in path:
+            relevant.append((clean(a.get_text(" ")), href))
+    print("DEBUG LIGA-INDEX LINKS:", relevant[:80], flush=True)
+    print("DEBUG LIGA-INDEX TITEL:", clean(soup.title.get_text(" ")) if soup.title else "", flush=True)
+
     for a in soup.find_all("a", href=True):
         href = urljoin(base, a["href"])
         parsed = urlparse(href)
@@ -558,6 +569,17 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
     """Liest echte Liga-Staffeln, keine Team-/Spieler- oder Turnier-Unterseiten."""
     soup = BeautifulSoup(content, "lxml")
     result = []
+    relevant = []
+    for a in soup.find_all("a", href=True):
+        href = urljoin(url, a["href"])
+        path = urlparse(href).path.lower()
+        if any(part in path for part in ("/league", "/draw", "/team", "/staffel")):
+            relevant.append((clean(a.get_text(" ")), href))
+    print("DEBUG SAISON LINKS:", season_code, relevant[:120], flush=True)
+    print("DEBUG SAISON TITEL/TEXT:", season_code,
+          clean(soup.title.get_text(" ")) if soup.title else "",
+          clean(soup.get_text(" "))[:1200], flush=True)
+
     for a in soup.find_all("a", href=True):
         href = urljoin(url, a["href"])
         path = urlparse(href).path.lower().rstrip("/")
@@ -608,7 +630,7 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
 
 
 async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int):
-    key = f"player-v9:{p['url']}:{seasons}:{p.get('competition', '')}"
+    key = f"player-v10:{p['url']}:{seasons}:{p.get('competition', '')}"
 
     hit = await cache_get(key)
     if hit is not None:

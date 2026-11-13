@@ -154,7 +154,7 @@ scanButton.addEventListener("click", async () => {
     const table = document.createElement("table");
     const thead = document.createElement("thead");
     const tbody = document.createElement("tbody");
-    thead.innerHTML = "<tr><th>Konkurrenz</th><th>Spieler</th><th>Aktuelle Saison</th><th>Saison 2025/2026</th><th>Status</th></tr>";
+    thead.innerHTML = `<tr><th>Konkurrenz</th><th>Spieler</th><th>Aktuelle Saison</th><th>Saison ${new Date().getFullYear() - (new Date().getMonth() < 6 ? 2 : 1)}/${new Date().getFullYear() - (new Date().getMonth() < 6 ? 1 : 0)}</th><th>Status</th></tr>`;
     table.append(thead, tbody);
 
     const now = new Date();
@@ -174,10 +174,7 @@ scanButton.addEventListener("click", async () => {
       const current = leagues.filter(x =>
         x.season === "aktuell" || x.season === currentSeasonShort
       );
-      const previous = leagues.filter(x =>
-        x.season === previousSeasonShort ||
-        x.season === previousSeasonShort.replace(/(\\d{4})\\/(\\d{2})$/, "$1/20$2")
-      );
+      const previous = leagues.filter(x => x.season === previousSeasonShort);
 
       const values = [
         p.competition,

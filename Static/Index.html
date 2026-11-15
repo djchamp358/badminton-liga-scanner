@@ -40,7 +40,7 @@ th{background:#eef3f0}.toolbar{display:flex;gap:10px;flex-wrap:wrap}.toolbar but
 
 <div class="toolbar">
 <button id="scan" disabled>Ausgewählte Konkurrenz analysieren</button>
-<button id="rescan" disabled>Neu analysieren (Cache umgehen)</button>
+<button id="rescan" disabled>Erneut scannen (Cache nutzen)</button>
 <button id="csv" disabled>CSV herunterladen</button>
 </div>
 
@@ -127,7 +127,7 @@ scanButton.addEventListener("click", async () => {
 });
 
 rescanButton.addEventListener("click", async () => {
-  await runAnalysis(true);
+  await runAnalysis(false);
 });
 
 async function runAnalysis(forceRefresh) {
@@ -144,7 +144,7 @@ async function runAnalysis(forceRefresh) {
   loadButton.disabled = true;
   csvButton.disabled = true;
   status.textContent = forceRefresh
-    ? "Frische DBV-Daten für " + competitionName + " werden geladen. Der Cache wird umgangen; bitte warten ..."
+    ? "Gespeicherte Ergebnisse für " + competitionName + " werden verwendet; nur fehlende oder abgelaufene Daten werden neu geladen ..."
     : "Analyse von " + competitionName + " läuft. Bitte warten ...";
   document.getElementById("results").replaceChildren();
   lastResult = null;

@@ -191,7 +191,7 @@ async function runAnalysis(forceRefresh) {
     const table = document.createElement("table");
     const thead = document.createElement("thead");
     const tbody = document.createElement("tbody");
-    thead.innerHTML = `<tr><th>Konkurrenz</th><th>Spieler</th><th>Aktuelle Saison</th><th>Saison ${new Date().getFullYear() - (new Date().getMonth() < 6 ? 2 : 1)}/${new Date().getFullYear() - (new Date().getMonth() < 6 ? 1 : 0)}</th><th>Ältere Liga-Historie</th><th>Status</th></tr>`;
+    thead.innerHTML = `<tr><th>Konkurrenz</th><th>Spieler</th><th>Aktuelle Saison</th><th>Saison ${new Date().getFullYear() - (new Date().getMonth() < 6 ? 2 : 1)}/${new Date().getFullYear() - (new Date().getMonth() < 6 ? 1 : 0)}</th><th>Ältere Liga-Historie</th><th>Status</th><th>Einzelprüfung</th></tr>`;
     table.append(thead, tbody);
 
     const now = new Date();
@@ -205,8 +205,7 @@ async function runAnalysis(forceRefresh) {
         : "Keine Liga gespielt";
     }
 
-    for (const p of result.players) {
-      const tr = document.createElement("tr");
+    function playerCellValues(p) {
       const leagues = p.leagues || [];
       const current = leagues.filter(x =>
         x.season === "aktuell" || x.season === currentSeasonShort
@@ -234,7 +233,7 @@ async function runAnalysis(forceRefresh) {
           : "Keine Liga gespielt";
       }
 
-      const values = [
+      return [
         p.competition,
         p.name,
         seasonText(current),
@@ -242,12 +241,69 @@ async function runAnalysis(forceRefresh) {
         olderHistoryText(older),
         p.status
       ];
-      for (const value of values) {
+    }
+
+    for (let playerIndex = 0; playerIndex < result.players.length; playerIndex++) {
+      const p = result.players[playerIndex];
+      const tr = document.createElement("tr");
+      for (const value of playerCellValues(p)) {
         const td = document.createElement("td");
-        td.textContent = value;
+        td.textContent = value || "";
         td.style.whiteSpace = "pre-wrap";
         tr.append(td);
       }
+
+      const actionCell = document.createElement("td");
+      const refreshButton = document.createElement("button");
+      refreshButton.type = "button";
+      refreshButton.textContent = "DBV einzeln prüfen";
+      refreshButton.addEventListener("click", async () => {
+        refreshButton.disabled = true;
+        refreshButton.textContent = "Prüfe …";
+        status.textContent = "Einzelprüfung für " + p.name + ": DBV wird direkt und ohne Cache abgefragt …";
+        try {
+          const startResponse = await fetch("/api/analyze/player/start", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({player: p, seasons: 5})
+          });
+          const startData = await startResponse.json();
+          if (!startResponse.ok) throw new Error(startData.detail || "Einzelprüfung konnte nicht gestartet werden.");
+
+          let refreshed = null;
+          while (!refreshed) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            const progressResponse = await fetch("/api/analyze/status/" + encodeURIComponent(startData.job_id));
+            const progress = await progressResponse.json();
+            if (!progressResponse.ok) throw new Error(progress.detail || "Prüffortschritt konnte nicht abgerufen werden.");
+            if (progress.state === "error") throw new Error(progress.error || "Einzelprüfung fehlgeschlagen.");
+            if (progress.state === "completed") refreshed = progress.result;
+            else status.textContent = "DBV-Einzelprüfung " + p.name + " läuft …";
+          }
+
+          result.players[playerIndex] = refreshed;
+          if (lastResult) lastResult.players[playerIndex] = refreshed;
+          const updatedValues = playerCellValues(refreshed);
+          for (let i = 0; i < updatedValues.length; i++) {
+            tr.cells[i].textContent = updatedValues[i] || "";
+          }
+
+          if ((refreshed.status || "").startsWith("DBV-Verbindung fehlgeschlagen:")) {
+            status.textContent = "DBV-Zugriff für " + p.name + " fehlgeschlagen: " + refreshed.status;
+            refreshButton.textContent = "Zugriff fehlgeschlagen";
+          } else {
+            status.textContent = "Einzelprüfung für " + p.name + " abgeschlossen. DBV hat geantwortet; Ergebnis wurde aktualisiert.";
+            refreshButton.textContent = "Erneut einzeln prüfen";
+          }
+        } catch (e) {
+          status.textContent = "Einzelprüfung für " + p.name + " fehlgeschlagen: " + (e.message || "Unbekannter Fehler");
+          refreshButton.textContent = "Erneut versuchen";
+        } finally {
+          refreshButton.disabled = false;
+        }
+      });
+      actionCell.append(refreshButton);
+      tr.append(actionCell);
       tbody.append(tr);
     }
     document.getElementById("results").append(table);

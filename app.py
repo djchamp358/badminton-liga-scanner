@@ -53,7 +53,7 @@ class CompetitionRequest(BaseModel):
 
 
 class PlayerRefreshRequest(BaseModel):
-    player: dict[str, str]
+    player: dict[str, Any]
     seasons: int = Field(default=5, ge=1, le=15)
     delay_ms: int = Field(default=250, ge=0, le=2000)
 

@@ -52,6 +52,14 @@ class CompetitionRequest(BaseModel):
     url: str
 
 
+class PlayerRefreshRequest(BaseModel):
+    player: dict[str, str]
+    seasons: int = Field(default=5, ge=1, le=15)
+    delay_ms: int = Field(default=250, ge=0, le=2000)
+
+
+
+
 def settings() -> tuple[str, str]:
     password = os.getenv("APP_PASSWORD", "")
     secret = os.getenv("SESSION_SECRET", "")
@@ -863,6 +871,46 @@ async def start_analysis(req: AnalyzeRequest, request: Request):
         if old_id != job_id and time.time() - old_job.get("created_at", time.time()) > 3600:
             _analysis_jobs.pop(old_id, None)
     asyncio.create_task(_run_analysis_job(job_id, req))
+    return {"job_id": job_id}
+
+
+async def _run_single_player_job(job_id: str, req: PlayerRefreshRequest):
+    job = _analysis_jobs[job_id]
+    try:
+        job.update({"state": "running", "total": 1, "competition": req.player.get("competition", "")})
+        # Erzwingt nur für diesen Spieler einen frischen Abruf und umgeht
+        # dabei sowohl den Spielergebnis- als auch den HTML-Seitencache.
+        result = await analyze_player(
+            req.player, req.seasons, req.delay_ms, force_refresh=True
+        )
+        job.update({
+            "state": "completed",
+            "result": result,
+            "processed": 1,
+            "players": [result],
+            "warning": result.get("status") if result.get("status", "").startswith("DBV-Verbindung fehlgeschlagen:") else None
+        })
+    except Exception as exc:
+        job.update({"state": "error", "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+
+
+@app.post("/api/analyze/player/start")
+async def start_single_player_analysis(req: PlayerRefreshRequest, request: Request):
+    require_auth(request)
+    player = req.player
+    player_url = player.get("url", "")
+    if not player_url or not allowed(player_url):
+        raise HTTPException(400, "Für die Einzelprüfung wird ein gültiger DBV-/Turnier.de-Spielerlink benötigt.")
+
+    job_id = uuid.uuid4().hex
+    _analysis_jobs[job_id] = {
+        "state": "queued", "processed": 0, "total": 1,
+        "players": [], "created_at": time.time()
+    }
+    for old_id, old_job in list(_analysis_jobs.items()):
+        if old_id != job_id and time.time() - old_job.get("created_at", time.time()) > 3600:
+            _analysis_jobs.pop(old_id, None)
+    asyncio.create_task(_run_single_player_job(job_id, req))
     return {"job_id": job_id}
 
 

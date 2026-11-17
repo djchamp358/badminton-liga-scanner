@@ -685,27 +685,17 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int, force_r
             await cache_put(key, result)
             return result
 
-        # Beide DBV-Profilformate unterstützen. Alte Profile besitzen ebenfalls
-        # eine Liga-Übersicht; deren Treffer werden zunächst diagnostisch geprüft.
-        # Liga-Übersichtsseite laden
+        # Liga-Übersichtsseite laden. Alte /player/-Profile können auf eine
+        # kanonische /player-profile/{UUID}/leagues-Seite verweisen. Wenn diese
+        # verfügbar ist und Saisonlinks enthält, ist sie die maßgebliche Quelle.
         index_url = profile.rstrip("/") + "/leagues"
         index_html = await fetch(index_url, force_refresh=force_refresh)
-
-        # Vorhandene Saisonlinks ermitteln
         pages = league_pages(index_html, index_url)
 
-        print("DEBUG PROFIL:", profile, flush=True)
-        print("DEBUG LIGA-SEITE:", index_url, flush=True)
-        print("DEBUG GEFUNDENE SAISONS:", pages, flush=True)
-
-        # Diagnose für alte Profilrouten: Manche Seiten verlinken zusätzlich
-        # auf das kanonische /player-profile/{UUID}/leagues-Profil.
-        # Nur bei einer ausdrücklich erzwungenen Einzelprüfung abrufen, damit
-        # normale Scans keine zusätzlichen DBV-Anfragen auslösen.
         profile_path = urlparse(profile).path.lower().rstrip("/")
-        if force_refresh and re.fullmatch(r"/player/[^/]+/[^/]+", profile_path):
-            canonical_leagues_url = None
+        if re.fullmatch(r"/player/[^/]+/[^/]+", profile_path):
             index_soup = BeautifulSoup(index_html, "lxml")
+            canonical_leagues_url = None
             for anchor in index_soup.find_all("a", href=True):
                 candidate = urljoin(index_url, anchor["href"])
                 candidate_path = urlparse(candidate).path.lower().rstrip("/")
@@ -718,18 +708,28 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int, force_r
 
             print("DEBUG KANONISCHE LIGA-URL:", canonical_leagues_url, flush=True)
             if canonical_leagues_url and canonical_leagues_url.rstrip("/") != index_url.rstrip("/"):
-                canonical_html = await fetch(canonical_leagues_url, force_refresh=force_refresh)
-                canonical_pages = league_pages(canonical_html, canonical_leagues_url)
-                print("DEBUG KANONISCHE SAISONS:", canonical_pages, flush=True)
-                if not canonical_pages:
-                    canonical_direct = parse_league_season(
-                        canonical_html, "aktuell", canonical_leagues_url
-                    )
+                try:
+                    canonical_html = await fetch(canonical_leagues_url, force_refresh=force_refresh)
+                    canonical_pages = league_pages(canonical_html, canonical_leagues_url)
+                    print("DEBUG KANONISCHE SAISONS:", canonical_pages, flush=True)
+                    if canonical_pages:
+                        # Ab hier die kanonische Übersicht und ihre Saisonlinks
+                        # tatsächlich analysieren, statt nur Diagnose-Logs zu schreiben.
+                        index_url = canonical_leagues_url
+                        index_html = canonical_html
+                        pages = canonical_pages
+                except Exception as canonical_error:
+                    # Bei Problemen mit der neuen Route bleibt die bisherige
+                    # alte Profilübersicht als Rückfallquelle erhalten.
                     print(
-                        "DEBUG KANONISCHE DIREKTE LIGA-EINTRÄGE:",
-                        [(x["season"], x["league"], x["team"], x["url"]) for x in canonical_direct],
+                        "DEBUG KANONISCHE LIGA-SEITE NICHT VERWENDBAR:",
+                        type(canonical_error).__name__, str(canonical_error)[:200],
                         flush=True
                     )
+
+        print("DEBUG PROFIL:", profile, flush=True)
+        print("DEBUG LIGA-SEITE:", index_url, flush=True)
+        print("DEBUG GEFUNDENE SAISONS:", pages, flush=True)
 
         leagues = []
 

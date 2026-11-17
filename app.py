@@ -698,6 +698,39 @@ async def analyze_player(p: dict[str, str], seasons: int, delay_ms: int, force_r
         print("DEBUG LIGA-SEITE:", index_url, flush=True)
         print("DEBUG GEFUNDENE SAISONS:", pages, flush=True)
 
+        # Diagnose für alte Profilrouten: Manche Seiten verlinken zusätzlich
+        # auf das kanonische /player-profile/{UUID}/leagues-Profil.
+        # Nur bei einer ausdrücklich erzwungenen Einzelprüfung abrufen, damit
+        # normale Scans keine zusätzlichen DBV-Anfragen auslösen.
+        profile_path = urlparse(profile).path.lower().rstrip("/")
+        if force_refresh and re.fullmatch(r"/player/[^/]+/[^/]+", profile_path):
+            canonical_leagues_url = None
+            index_soup = BeautifulSoup(index_html, "lxml")
+            for anchor in index_soup.find_all("a", href=True):
+                candidate = urljoin(index_url, anchor["href"])
+                candidate_path = urlparse(candidate).path.lower().rstrip("/")
+                if (
+                    urlparse(candidate).hostname in ALLOWED_HOSTS
+                    and re.fullmatch(r"/player-profile/[^/]+/leagues", candidate_path)
+                ):
+                    canonical_leagues_url = candidate
+                    break
+
+            print("DEBUG KANONISCHE LIGA-URL:", canonical_leagues_url, flush=True)
+            if canonical_leagues_url and canonical_leagues_url.rstrip("/") != index_url.rstrip("/"):
+                canonical_html = await fetch(canonical_leagues_url, force_refresh=force_refresh)
+                canonical_pages = league_pages(canonical_html, canonical_leagues_url)
+                print("DEBUG KANONISCHE SAISONS:", canonical_pages, flush=True)
+                if not canonical_pages:
+                    canonical_direct = parse_league_season(
+                        canonical_html, "aktuell", canonical_leagues_url
+                    )
+                    print(
+                        "DEBUG KANONISCHE DIREKTE LIGA-EINTRÄGE:",
+                        [(x["season"], x["league"], x["team"], x["url"]) for x in canonical_direct],
+                        flush=True
+                    )
+
         leagues = []
 
         if pages:

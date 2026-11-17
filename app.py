@@ -615,10 +615,18 @@ def parse_league_season(content: str, season_code: str, url: str) -> list[dict[s
         if "–" in league and league.count("–") >= 2:
             league = league.split("–")[-1].strip() or league
 
-        # Turniergruppen, Platzierungsrunden und Spieler-Matchseiten ausschließen.
-        if re.search(r"\b(gruppe|platz|matches|match|turnier|pokal|cup|open|masters)\b", league, re.I):
+        # Echte Liga-Gruppen und Hobby-Endrunden sind Liga-Einträge.
+        # "Gruppe" darf daher nicht pauschal ausgeschlossen werden, wenn
+        # die Bezeichnung zugleich Liga/Klasse/Staffel enthält.
+        is_league_label = bool(re.search(r"(liga|klasse|staffel)", league, re.I))
+        is_hobby_final = bool(re.search(r"hobby.*endrunde|endrunde.*hobby", league, re.I))
+
+        # Reine Turnier-/Platzierungs- und Matchseiten weiterhin ausschließen.
+        if re.search(r"\b(platz|matches|match|turnier|pokal|cup|open|masters)\b", league, re.I):
             continue
-        if not re.search(r"(liga|klasse|staffel)", league, re.I):
+        if re.search(r"\bgruppe\b", league, re.I) and not is_league_label:
+            continue
+        if not (is_league_label or is_hobby_final):
             continue
 
         team, node = "", a
